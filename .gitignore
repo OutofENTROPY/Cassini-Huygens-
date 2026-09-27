@@ -1,0 +1,11 @@
+# 原始历表与生成缓存不入库（tools/ 可从 eyes.nasa.gov 重新下载）
+data_raw/
+__pycache__/
+*.pyc
+.zcode/
+
+# 本地运行产生的日志与临时输出
+server.log
+*.log
+tmp_*.txt
+out_test.txt

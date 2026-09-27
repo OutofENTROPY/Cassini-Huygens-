@@ -1,0 +1,160 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cassini–Huygens 历史飞行数据 · 3D 轨迹可视化 (1997–2017)</title>
+<link rel="stylesheet" href="css/style.css?v=2026124">
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+
+  <!-- 顶栏 -->
+  <div id="topbar">
+    <div id="brand">
+      <p>INTERPLANETARY TRAJECTORY REPLAY · 1997–2017 · EPHEMERIS: NASA EYES ON THE SOLAR SYSTEM</p>
+      <h1>Cassini–Huygens 历史飞行数据</h1>
+    </div>
+    <div id="view-buttons">
+      <button class="view-btn active" data-view="follow" title="镜头跟随 Cassini">跟随 Cassini</button>
+    </div>
+    <div id="hud-right">
+      <button id="btn-settings" title="设置">⚙&#xFE0E;</button>
+      <button id="btn-help" title="操作说明">?</button>
+      <!-- 右上角设置菜单：全局视角 / 真实光照 / 轨迹开关 -->
+      <div id="settings-panel" class="hidden">
+        <div class="set-label">视角</div>
+        <button class="view-btn" data-view="free" title="太阳系全局视角">全局视角</button>
+        <div class="set-label">渲染</div>
+        <div class="set-row">
+          <span>真实光照</span>
+          <button class="switch" id="lighting-btn" role="switch" aria-checked="false" title="真实光照：阴影处完全不反光"></button>
+        </div>
+        <div class="set-label">轨迹</div>
+        <div class="set-row">
+          <span>未来轨迹</span>
+          <button class="switch" id="trail-future" role="switch" aria-checked="false" title="显示当前时刻之后的未来轨迹"></button>
+        </div>
+        <div id="trail-history" title="已飞过轨迹的显示范围">
+          <button class="view-btn tog active" id="trail-recent">近期轨迹</button>
+          <button class="view-btn tog" id="trail-all">全部轨迹</button>
+        </div>
+        <div class="set-row">
+          <span>行星轨迹</span>
+          <button class="switch on" id="planet-orbits" role="switch" aria-checked="true" title="显示行星与卫星的轨道线"></button>
+        </div>
+        <div class="set-row">
+          <span>卡西尼轨迹</span>
+          <button class="switch on" id="cassini-trail" role="switch" aria-checked="true" title="显示 Cassini 的日心轨迹与行星/卫星影响球内的相对轨迹"></button>
+        </div>
+        <div class="set-row">
+          <span>惠更斯轨迹</span>
+          <button class="switch on" id="huygens-trail" role="switch" aria-checked="true" title="显示 Huygens 的日心轨迹与土星/Titan 影响球内的相对轨迹（分离后）"></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 状态 HUD -->
+  <div id="hud">
+    <div id="hud-date">1997-10-15 08:43 UTC</div>
+    <div id="hud-phase">发射 · 地球逃逸</div>
+    <div id="hud-dist">—</div>
+    <div id="hud-vel">—</div>
+  </div>
+
+  <!-- 天体朝向与自转状态（item 9，聚焦行星/卫星时显示） -->
+  <div id="body-info" class="hidden">
+    <div id="bi-name">—</div>
+    <div id="bi-rows"></div>
+  </div>
+
+  <!-- 事件信息卡 -->
+  <div id="event-card" class="hidden">
+    <button id="event-close">×</button>
+    <div id="event-date"></div>
+    <h2 id="event-title"></h2>
+    <p id="event-text"></p>
+  </div>
+
+  <!-- 事件列表面板 -->
+  <div id="event-panel" class="collapsed">
+    <div id="event-panel-head">
+      <span>任务事件</span>
+      <button id="event-toggle">‹</button>
+    </div>
+    <div id="event-list"></div>
+  </div>
+
+  <!-- 帮助 -->
+  <div id="help-modal" class="hidden">
+    <div id="help-box">
+      <h2>操作说明</h2>
+      <ul>
+        <li><b>左键拖动</b> — 旋转视角</li>
+        <li><b>滚轮</b> — 缩放</li>
+        <li><b>右键拖动</b> — 平移视野中心</li>
+        <li><b>点击行星 / 卫星标签</b> — 平滑过渡聚焦该天体</li>
+        <li><b>点击时间轴圆点 / 事件列表</b> — 跳转事件并聚焦</li>
+        <li><b>时间条拖动</b> — 任意时刻回放（条左半为倒退半程，右半为快进半程）</li>
+        <li><b>空格</b> — 播放 / 暂停</li>
+        <li><b>时间条上方速率滑块</b> — 时间流速（中点保持，左=倒放，右=正放）</li>
+        <li><b>右上角 ⚙ 设置</b> — 全局视角、真实光照、行星 / Cassini 轨迹开关、未来轨迹显隐、近期/全部历史轨迹切换</li>
+      </ul>
+      <p>行星尺寸与轨道距离均为真实比例；Cassini 进入行星引力影响球（Venus / Earth / Jupiter / Saturn）时，自动叠加显示相对该行星的轨迹，两条轨迹的交点即 Cassini 实际位置，日心轨迹同步降低亮度；在土星系统内进一步接近卫星（Titan / Enceladus / Rhea / Dione / Iapetus 等）时，日心与土星相对轨迹再降亮度并淡入相对卫星的二级轨迹；离开影响球后自动淡出恢复。点击 Huygens 标签或事件卡可跟随惠更斯探测器（2005-01-14 着陆 Titan、失联后自动移除实体）。飞船模型为真实尺寸（缩小视角时随之缩至真实大小），高增益天线按任务实际姿态实时指向 Earth。</p>
+      <p id="help-github">源代码已开源在 GitHub：<a href="https://github.com/OutofENTROPY" target="_blank" rel="noopener">@OutofENTROPY</a></p>
+      <button id="help-close">开始探索</button>
+    </div>
+  </div>
+
+  <!-- 底部时间轴：播放键行（日期 | 播放/暂停 | 时分秒，位于速率控制上方）/ 速率滑块 / 总时间条（进度最底层，事件节点叠加其上） -->
+  <div id="timeline-bar">
+    <div id="play-row">
+      <span id="time-date">1997-10-15</span>
+      <button id="play-btn" title="播放/暂停 (空格)" aria-label="播放/暂停">
+        <!-- 三角向右偏移 1.9 单位：质心 ((8.2+8.2+19.6)/3=12.0) 正对圆心，光学居中 -->
+        <svg class="ic-play" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><polygon points="8.2,5 8.2,19 19.6,12" fill="currentColor"/></svg>
+        <svg class="ic-pause" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="6.2" y="5" width="4.2" height="14" fill="currentColor"/><rect x="13.6" y="5" width="4.2" height="14" fill="currentColor"/></svg>
+      </button>
+      <span id="time-hm">09:26:06 UTC</span>
+    </div>
+    <div id="rate-wrap">
+      <div id="rate-slider-wrap">
+        <input id="rate-slider" type="range" min="-1000" max="1000" value="1" step="1">
+        <div id="rate-divider" title="倒放 | 正放"></div>
+      </div>
+      <div id="rate-label">RATE 1 SEC/S</div>
+    </div>
+    <div id="slider-wrap">
+      <div class="slider-half" id="slider-left"><div class="slider-fill" id="progress-left"></div></div>
+      <div class="slider-half" id="slider-right"><div class="slider-fill" id="progress-right"></div></div>
+      <div id="slider-handle"></div>
+      <div id="slider-marks"></div>
+    </div>
+  </div>
+
+  <div id="loading">
+    <div class="load-ring"></div>
+    <div id="loading-text">正在加载真实历表数据…</div>
+  </div>
+</div>
+
+<script src="lib/three.min.js?v=2026094"></script>
+<script src="lib/GLTFLoader.js?v=2026103"></script>
+<script src="lib/DRACOLoader.js?v=2026103"></script>
+<script src="data/textures.js?v=2026121"></script>
+<script src="data/stars.js?v=2026094"></script>
+<script src="data/cassini_data.js?v=2026201"></script>
+<script src="data/moons_data.js?v=2026201"></script>
+<script src="data/models.js?v=2026103"></script>
+<script src="js/events.js?v=2026201"></script>
+<script src="js/textures.js?v=2026102"></script>
+<script src="js/huygens.js?v=2026201"></script>
+<script src="js/cassini_model.js?v=2026103"></script>
+<script src="js/scene.js?v=2026201"></script>
+<script src="js/camera.js?v=2026112"></script>
+<script src="js/timeline.js?v=2026124"></script>
+<script src="js/main.js?v=2026201"></script>
+</body>
+</html>
