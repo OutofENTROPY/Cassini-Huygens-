@@ -25,8 +25,10 @@ body {
   -webkit-user-select: none;
 }
 #app { position: relative; width: 100%; height: 100%; }
-#scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+#scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
 #scene:active { cursor: grabbing; }
+/* 触屏：手势在画布与时间条上就地消化，禁止浏览器接管（双击缩放 / 捏合缩放整页） */
+body { touch-action: manipulation; }
 
 /* ---------- 顶栏 ---------- */
 #topbar {
@@ -183,15 +185,16 @@ body {
 /* ---------- 事件列表 ---------- */
 /* 面板本体左侧贴把手、右侧贴屏幕边缘，均取直角（圆角只保留在把手左端），避免拼接处露出缺口 */
 #event-panel {
+  --evpanel-w: 240px;
   position: absolute; right: 0; top: 130px; z-index: 9;
-  width: 240px; max-height: calc(100vh - 310px);
+  width: var(--evpanel-w); max-height: calc(100vh - 310px);
   background: var(--glass-strong); border: 1px solid var(--border-soft);
   border-left: none; border-right: none; border-radius: 0;
   backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
   transition: transform .3s ease;
   display: flex; flex-direction: column;
 }
-#event-panel.collapsed { transform: translateX(240px); }
+#event-panel.collapsed { transform: translateX(var(--evpanel-w)); }
 /* 窄竖排标签：收起时仅露出 36px 宽的侧边把手 */
 #event-panel-head {
   position: absolute; left: -36px; top: 0; width: 36px; height: 100%;
@@ -253,6 +256,7 @@ body {
 #slider-wrap {
   position: relative; width: 100%; height: 34px;
   display: flex; align-items: center; cursor: pointer;
+  touch-action: none;
 }
 .slider-half {
   position: relative; flex: 1; height: 12px; overflow: hidden;
@@ -320,6 +324,7 @@ body {
   display: block;
   width: 100%; height: 4px; border-radius: 2px;
   background: rgba(255,255,255,.14); outline: none; cursor: pointer;
+  touch-action: none;
 }
 #rate-slider::-webkit-slider-thumb {
   -webkit-appearance: none; appearance: none;
@@ -346,11 +351,47 @@ body {
   text-align: center;
 }
 
+/* ---------- 移动端 / 平板适配（手机竖屏与窄横屏） ---------- */
 @media (max-width: 900px) {
-  #event-panel { display: none; }
-  #rate-wrap { display: none; }
   #brand p { display: none; }
-  #trail-history { display: none; }
+  #brand h1 { font-size: 14px; }
+
+  /* 速率控制：手机上收窄保留（不再是隐藏），保证快进/倒放速率可见可调 */
+  #rate-wrap {
+    display: flex;
+    width: min(62vw, 280px);
+    gap: 3px;
+  }
+
+  /* 事件列表面板：改为近全宽滑出层，默认收起、点右侧竖排把手展开 */
+  #event-panel {
+    --evpanel-w: min(76vw, 280px);
+    top: 128px;
+    max-height: calc(100vh - 330px);
+  }
+
+  /* 顶部 HUD 与事件卡：收紧留白与宽度，避免窄屏溢出 */
+  #hud { left: 10px; top: 64px; padding: 8px 11px; min-width: 0; max-width: calc(100vw - 90px); }
+  #hud-date { font-size: 14px; }
+  #event-card { right: 10px; top: 64px; padding: 13px 15px; }
+  #body-info { left: 10px; top: 150px; max-width: calc(100vw - 90px); }
+  #topbar { padding: 10px 12px; }
+
+  /* 底部时间轴：压缩留白，触摸目标保持足够大 */
+  #timeline-bar { padding: 6px 10px 10px; gap: 5px; }
+  #play-btn { width: 46px; height: 46px; }
+  .mark { width: 13px; height: 13px; }
+
+  /* 横屏手机：进一步压缩事件面板高度，避免与时间轴重叠 */
+  @media (max-height: 480px) {
+    #event-panel { max-height: calc(100vh - 220px); top: 96px; }
+    #rate-wrap { width: 46vw; }
+  }
+}
+
+/* 平板（601–900px 宽）：布局接近桌面，仅微调 */
+@media (min-width: 601px) and (max-width: 900px) {
+  #event-panel { --evpanel-w: 260px; }
 }
 
 /* ---------- 帮助 ---------- */
@@ -363,9 +404,17 @@ body {
 #help-modal.hidden { display: none; }
 #help-box {
   width: 460px; max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   background: var(--glass-strong); border: 1px solid var(--border-soft);
   border-radius: 12px; padding: 26px 30px;
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+/* 小屏（尤其横屏）下进一步收紧内边距，保证标题与关闭按钮始终可见 */
+@media (max-height: 560px) {
+  #help-box { padding: 16px 20px; }
+  #help-box li { line-height: 1.7; }
 }
 #help-box h2 { font-size: 18px; margin-bottom: 14px; color: var(--accent); }
 #help-box ul { list-style: none; margin-bottom: 14px; }
