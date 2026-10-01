@@ -3,12 +3,13 @@
 :root {
   --bg: #05070d;
 
-  /* miuix 表面色：控件为低透明白，悬浮卡片为深色玻璃（大半径模糊 + 饱和度提升） */
-  --glass: rgba(255, 255, 255, 0.07);
-  --glass-hover: rgba(255, 255, 255, 0.12);
-  --glass-active: rgba(255, 255, 255, 0.20);
-  --panel: rgba(20, 24, 33, 0.55);
-  --panel-strong: rgba(16, 19, 26, 0.62);
+  /* miuix 表面色：灰色混色毛玻璃——中性灰替代透明白/深蓝黑，
+     提高不透明度让星野上的文字对比稳定可读 */
+  --glass: rgba(146, 151, 160, 0.28);
+  --glass-hover: rgba(160, 165, 174, 0.36);
+  --glass-active: rgba(176, 181, 190, 0.44);
+  --panel: rgba(52, 56, 65, 0.70);
+  --panel-strong: rgba(46, 50, 59, 0.80);
 
   --stroke: rgba(255, 255, 255, 0.09);
   --stroke-strong: rgba(255, 255, 255, 0.18);
@@ -139,10 +140,10 @@ body { touch-action: manipulation; }
   border-color: rgba(92, 157, 255, 0.45);
 }
 
-/* 状态折叠按钮：仅移动端显示（桌面 display:none，见 #hud-stack） */
+/* 状态折叠按钮 ◉：桌面 / 移动共用（默认显隐由 JS 按端设定：桌面展开、移动端收起） */
 #hud-toggle {
   width: 36px; height: 36px; border-radius: 50%;
-  display: none; align-items: center; justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   background: var(--glass); border: 1px solid var(--stroke);
   color: var(--text-2); cursor: pointer;
   transition: background-color .35s var(--ease), color .35s var(--ease), transform .15s var(--ease);
@@ -208,28 +209,36 @@ body { touch-action: manipulation; }
 .switch.on::after { transform: translateX(19px); }
 
 /* ---------- HUD ---------- */
-/* 桌面端：容器不产生盒子，#hud / #body-info 直接相对 #app 绝对定位；
-   移动端（见底部媒体查询）转为 flex 列，折叠在 ◉ 按钮下 */
-#hud-stack { display: contents; }
-#hud {
+/* 桌面 / 移动统一：#hud-stack 为左上角纵向按钮列（◉ 折叠钮在最上），
+   #hud / #body-info 作为流内子项依次排在下方，间距恒定、不再相互重叠；
+   显隐统一由 body.hud-open 控制（初始状态 JS 设定：桌面展开、移动端收起） */
+#hud-stack {
   position: absolute; left: 18px; top: 76px; z-index: 9;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+  pointer-events: none;   /* 容器不产生可点击空白区，画布拖拽可穿透 */
+}
+#hud-stack > * { pointer-events: auto; }
+#hud {
+  display: none;
   background: var(--panel); border: 1px solid var(--stroke);
   border-radius: var(--r-md); padding: 12px 16px;
   backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), var(--shadow-1);
   min-width: 216px;
 }
+body.hud-open #hud { display: block; }
 #hud-date {
   font-size: 17px; font-weight: 600; color: var(--primary);
   letter-spacing: 0.4px; font-variant-numeric: tabular-nums;
 }
 #hud-phase { font-size: 12px; font-weight: 500; color: var(--text); margin-top: 6px; }
+#hud-att { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 #hud-dist { font-size: 11px; color: var(--text-dim); margin-top: 6px; line-height: 1.5; }
 #hud-vel { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 
 /* ---------- 天体朝向与自转状态 ---------- */
 #body-info {
-  position: absolute; left: 18px; top: 178px; z-index: 9;
+  display: none;
   background: var(--panel); border: 1px solid var(--stroke);
   border-radius: var(--r-md); padding: 12px 16px;
   backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
@@ -237,6 +246,7 @@ body { touch-action: manipulation; }
   min-width: 216px; max-width: 264px;
 }
 #body-info.hidden { display: none; }
+body.hud-open #body-info:not(.hidden) { display: block; }
 #bi-name { font-size: 14px; font-weight: 600; color: var(--primary); letter-spacing: 0.4px; }
 #bi-rows { margin-top: 8px; }
 #bi-rows .bi-row {
@@ -246,7 +256,8 @@ body { touch-action: manipulation; }
 #bi-rows .bi-row b { color: var(--text); font-weight: 500; text-align: right; }
 
 /* ---------- 事件卡 ---------- */
-/* 点击任务事件时弹出，位于左下角（时间轴上方） */
+/* 点击任务事件时弹出，位于左下角（时间轴上方）；
+   body.event-folded 时收纳进 #event-fab 按钮（移动端默认，桌面可手动收起） */
 #event-card {
   position: absolute; left: 18px; bottom: 142px; z-index: 11;
   width: 336px; max-width: calc(100vw - 36px);
@@ -256,13 +267,15 @@ body { touch-action: manipulation; }
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), var(--shadow-2);
   transition: opacity .3s var(--ease), transform .3s var(--spring);
 }
-#event-card.hidden { opacity: 0; transform: translateY(16px) scale(0.97); pointer-events: none; }
+#event-card.hidden,
+body.event-folded #event-card { opacity: 0; transform: translateY(16px) scale(0.97); pointer-events: none; }
 #event-card::before {
   content: ""; position: absolute; left: 0; top: 16px; bottom: 16px; width: 3px;
   background: linear-gradient(to bottom, var(--accent2), rgba(255,162,89,0.25));
   border-radius: var(--r-full);
 }
-#event-close {
+/* 收起（可再次展开）：折入 #event-fab，事件卡唯一操作按钮 */
+#event-fold {
   position: absolute; top: 10px; right: 10px;
   width: 26px; height: 26px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
@@ -270,8 +283,8 @@ body { touch-action: manipulation; }
   color: var(--text-dim); cursor: pointer;
   transition: color .3s var(--ease), background-color .3s var(--ease);
 }
-#event-close svg { width: 14px; height: 14px; }
-#event-close:hover { color: var(--text); background: rgba(255,255,255,0.10); }
+#event-fold svg { width: 14px; height: 14px; }
+#event-fold:hover { color: var(--text); background: rgba(255,255,255,0.10); }
 #event-date {
   font-size: 11px; font-weight: 600; color: var(--accent2);
   letter-spacing: 1.2px; font-variant-numeric: tabular-nums;
@@ -279,17 +292,48 @@ body { touch-action: manipulation; }
 #event-title { font-size: 16px; margin: 6px 0 8px; font-weight: 600; letter-spacing: 0.2px; }
 #event-text { font-size: 12.8px; line-height: 1.75; color: var(--text-2); }
 
+/* 事件卡收纳按钮：桌面固定在左下角（事件卡原位，fixed 免受 #hud-stack 定位上下文影响），
+   移动端收纳进左上角按钮列（见底部媒体查询） */
+#event-fab {
+  display: none;
+  position: fixed; left: 18px; bottom: 142px; z-index: 11;
+  height: 38px; padding: 0 15px 0 13px;
+  align-items: center; gap: 7px;
+  border-radius: var(--r-full);
+  background: var(--glass); border: 1px solid var(--stroke);
+  color: var(--text-2); font-size: 12.5px; font-weight: 500; cursor: pointer;
+  backdrop-filter: var(--blur-btn); -webkit-backdrop-filter: var(--blur-btn);
+  box-shadow: var(--shadow-1);
+  transition: background-color .35s var(--ease), color .35s var(--ease), transform .15s var(--ease);
+}
+#event-fab svg { width: 16px; height: 16px; flex: none; }
+#event-fab:hover { color: var(--text); background: var(--glass-hover); }
+#event-fab:active { transform: scale(0.96); }
+body.event-open.event-folded #event-fab { display: flex; }
+/* 呼吸闪烁：提示有事件卡收在按钮中（移动端启用，见媒体查询） */
+@keyframes fab-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(92,157,255,.50), var(--shadow-1); }
+  50%      { box-shadow: 0 0 0 9px rgba(92,157,255,0), var(--shadow-1); }
+}
+
 /* ---------- 事件列表 ---------- */
-/* 面板本体左侧贴把手、右侧贴屏幕边缘，均取直角（圆角只保留在把手左端），避免拼接处露出缺口 */
+/* 面板本体左侧贴把手、右侧贴屏幕边缘，均取直角（圆角只保留在把手左端与面板左下角） */
 #event-panel {
   --evpanel-w: 244px;
-  position: absolute; right: 0; top: 88px; z-index: 9;
-  width: var(--evpanel-w); max-height: calc(100vh - 236px);
-  background: var(--panel); border: 1px solid var(--stroke);
-  border-left: none; border-right: none; border-radius: 0;
-  backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
+  position: absolute; right: 0; top: 80px; z-index: 9;
+  width: var(--evpanel-w); max-height: calc(100vh - 244px);
+  max-height: calc(100dvh - 244px);
+  border: 1px solid var(--stroke);
+  border-left: none; border-right: none; border-radius: 0 0 0 var(--r-md);
   transition: transform .35s var(--ease);
   display: flex; flex-direction: column;
+}
+/* 毛玻璃移至 ::before：若直接挂在面板上，会为后代（突起把手）建立 backdrop root，
+   导致把手自己的 backdrop-filter 采样不到面板外的画面而失效 */
+#event-panel::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  background: var(--panel); border-radius: inherit;
+  backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
 }
 #event-panel.collapsed { transform: translateX(var(--evpanel-w)); }
 /* 收起时仅顶部小把手突出：高度随内容自适应，只覆盖上端 */
@@ -315,9 +359,10 @@ body { touch-action: manipulation; }
   display: flex; align-items: center; justify-content: center;
   color: var(--text-dim); cursor: pointer;
   transition: transform .35s var(--spring);
+  transform: rotate(180deg);   /* 展开态：箭头指向屏幕右缘，即收起方向 */
 }
 #event-toggle svg { width: 14px; height: 14px; }
-#event-panel.collapsed #event-toggle { transform: rotate(180deg); }
+#event-panel.collapsed #event-toggle { transform: rotate(0deg); }   /* 收起态：指向屏内，即展开方向 */
 #event-list { overflow-y: auto; padding: 8px; }
 #event-list::-webkit-scrollbar { width: 4px; }
 #event-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16); border-radius: var(--r-full); }
@@ -375,27 +420,28 @@ body { touch-action: manipulation; }
   background: linear-gradient(90deg, #9cc4ff, var(--primary));
   box-shadow: 0 0 12px rgba(92,157,255,.35);
 }
+/* miuix 实心圆钮：无描边、主色填充，播放态切卡西尼橙；尺寸收紧使圆形边框贴合图标 */
 #play-btn {
   flex: none;
-  width: 46px; height: 46px; border-radius: 50%;
+  width: 40px; height: 40px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center; line-height: 1;
-  background: var(--glass-active); border: 1px solid var(--stroke-strong);
-  color: var(--text); cursor: pointer;
-  transition: background-color .35s var(--ease), color .35s var(--ease), border-color .35s var(--ease), transform .15s var(--ease);
-  backdrop-filter: var(--blur-btn); -webkit-backdrop-filter: var(--blur-btn);
-  box-shadow: var(--shadow-1);
+  background: var(--primary); border: none;
+  color: #ffffff; cursor: pointer;
+  transition: background-color .35s var(--ease), color .35s var(--ease), box-shadow .35s var(--ease), transform .15s var(--ease);
+  box-shadow: 0 4px 16px rgba(92,157,255,.38);
 }
 /* 播放/暂停图标用内联 SVG 几何绘制（三角质心与双竖线组合中心均落在圆心），随 .playing 类切换 */
 #play-btn .ic-pause { display: none; }
 #play-btn.playing .ic-play { display: none; }
 #play-btn.playing .ic-pause { display: block; }
-#play-btn:hover { background: rgba(255,255,255,0.26); }
-#play-btn:active { transform: scale(0.95); }
+#play-btn:hover { background: #74acff; }
+#play-btn:active { transform: scale(0.94); }
 #play-btn.playing {
-  background: var(--accent2); border-color: var(--accent2);
+  background: var(--accent2);
   color: #2a1804;
-  box-shadow: 0 4px 20px rgba(255,162,89,.35);
+  box-shadow: 0 4px 20px rgba(255,162,89,.38);
 }
+#play-btn.playing:hover { background: #ffb077; }
 #slider-handle {
   position: absolute; top: 50%; width: 15px; height: 15px; z-index: 4;
   background: #ffffff; border-radius: 50%;
@@ -463,22 +509,30 @@ body { touch-action: manipulation; }
 /* ---------- 移动端 / 平板适配（手机竖屏与窄横屏） ---------- */
 @media (max-width: 900px) {
   #brand p { display: none; }
-  #brand h1 { font-size: 14px; line-height: 1.35; }
+  #brand h1 { font-size: 14px; line-height: 1.35; white-space: nowrap; }
   /* 左上角标题：英文与中文分两行 */
   #brand h1 .h1-zh { display: block; }
 
-  /* 状态卡片折叠：#hud / #body-info 默认隐藏，点左上角 ◉ 弹出按钮展开 */
-  #hud-stack {
-    display: flex; position: absolute; left: 10px; top: 66px; z-index: 10;
-    flex-direction: column; align-items: flex-start; gap: 8px;
-  }
-  #hud-toggle { display: flex; }
-  #hud, #body-info { position: static; display: none; }
-  body.hud-open #hud { display: block; }
-  body.hud-open #body-info:not(.hidden) { display: block; }
+  /* 右上角收窄：跟随按钮缩小 + 图标钮 32px，保证左侧「Cassini–Huygens /
+     历史飞行数据」稳定为两行而不是三行 */
+  #view-buttons .view-btn { padding: 5px 11px; font-size: 11.5px; }
+  #btn-help, #btn-settings, #btn-fullscreen { width: 32px; height: 32px; }
+  #btn-help svg, #btn-settings svg, #btn-fullscreen svg { width: 16px; height: 16px; }
+  #hud-right { gap: 6px; margin-left: 8px; }
+
+  /* 状态卡片折叠：初始状态由 JS 设定（移动端收起），点左上角 ◉ 切换显隐 */
+  #hud-stack { left: 10px; top: 66px; z-index: 10; gap: 8px; }
   #hud { padding: 8px 12px; min-width: 0; max-width: calc(100vw - 90px); }
   #hud-date { font-size: 14px; }
   #body-info { max-width: calc(100vw - 90px); }
+
+  /* 任务事件收纳按钮：进入左上角按钮列（◉ 下方），未展开时呼吸闪烁提示 */
+  #event-fab {
+    position: static; width: 36px; height: 36px; padding: 0;
+    justify-content: center;
+  }
+  #event-fab span { display: none; }
+  body.event-open.event-folded #event-fab { animation: fab-breathe 2.2s ease-in-out infinite; }
 
   /* 速率控制：手机上收窄保留（不再是隐藏），保证快进/倒放速率可见可调 */
   #rate-wrap {
@@ -487,26 +541,31 @@ body { touch-action: manipulation; }
     gap: 4px;
   }
 
-  /* 事件列表面板：改为近全宽滑出层，默认收起、点右侧顶部小把手展开 */
+  /* 事件列表面板：改为近全宽滑出层，默认收起、点右侧顶部小把手展开；
+     整体上移并压缩最大高度，底部始终留出时间轴与手势条空间 */
   #event-panel {
     --evpanel-w: min(76vw, 280px);
-    top: 102px;
-    max-height: calc(100vh - 244px);
+    top: 94px;
+    max-height: calc(100vh - 264px);
+    max-height: calc(100dvh - 264px);
   }
 
   /* 事件卡：左下角（时间轴上方），收紧留白避免窄屏溢出 */
   #event-card { left: 10px; bottom: 142px; padding: 13px 15px 13px 17px; }
   #topbar { padding: 10px 12px; }
-  #hud-right { gap: 6px; }
 
   /* 底部时间轴：压缩留白，触摸目标保持足够大 */
   #timeline-bar { padding: 6px 10px 12px; gap: 6px; }
-  #play-btn { width: 48px; height: 48px; }
+  #play-btn { width: 42px; height: 42px; }
   .mark { width: 13px; height: 13px; }
 
   /* 横屏手机：进一步压缩事件面板高度，避免与时间轴重叠 */
   @media (max-height: 480px) {
-    #event-panel { max-height: calc(100vh - 192px); top: 62px; }
+    #event-panel {
+      top: 56px;
+      max-height: calc(100vh - 206px);
+      max-height: calc(100dvh - 206px);
+    }
     #hud-stack { top: 58px; }
     #rate-wrap { width: 46vw; }
   }
@@ -522,18 +581,28 @@ body { touch-action: manipulation; }
   position: absolute; inset: 0; z-index: 30;
   background: rgba(3,5,10,.62);
   display: flex; align-items: center; justify-content: center;
+  padding: 16px;
   backdrop-filter: blur(20px) saturate(1.3); -webkit-backdrop-filter: blur(20px) saturate(1.3);
 }
 #help-modal.hidden { display: none; }
 #help-box {
-  width: 472px; max-width: calc(100vw - 40px);
-  max-height: calc(100vh - 40px);
+  width: 472px; max-width: 100%;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);   /* dvh：移动端浏览器工具栏 / 手势条收起展开时也始终完整可见 */
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   background: var(--panel-strong); border: 1px solid var(--stroke);
   border-radius: var(--r-lg); padding: 26px 30px;
   backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), var(--shadow-2);
+}
+/* 移动端：触摸操作说明替换桌面（鼠标）说明，标题同步切换 */
+.ht-m, #help-list-m { display: none; }
+@media (max-width: 900px) {
+  .ht-d, #help-list-d { display: none; }
+  .ht-m { display: inline; }
+  #help-list-m { display: block; }
+  #help-box { padding: 18px 20px; }
 }
 /* 小屏（尤其横屏）下进一步收紧内边距，保证标题与关闭按钮始终可见 */
 @media (max-height: 560px) {
@@ -568,14 +637,17 @@ body { touch-action: manipulation; }
   transition: opacity .5s;
 }
 #loading.done { opacity: 0; pointer-events: none; }
-.load-ring {
-  width: 46px; height: 46px; border-radius: 50%;
-  border: 3px solid rgba(92,157,255,.14);
-  border-top-color: var(--primary);
-  animation: spin 0.9s linear infinite;
-}
+/* miuix 转圈加载：整环淡蓝轨道 + 圆头主色弧段旋转。
+   旋转挂在 div 包装层并 will-change 提升为独立合成层：启动期主线程被数十 MB
+   base64 数据脚本的解析 / atob 解码长时间占满，合成器动画不被阻塞、不再卡顿 */
+.load-ring { width: 46px; height: 46px; display: block; will-change: transform; animation: spin 0.9s linear infinite; }
+.load-ring svg { width: 100%; height: 100%; display: block; }
 @keyframes spin { to { transform: rotate(360deg); } }
-#loading-text { font-size: 13px; color: var(--text-dim); letter-spacing: 2px; }
+#loading-text {
+  font-size: 12px; font-weight: 600; color: var(--text-dim);
+  letter-spacing: 5px; text-indent: 5px;   /* 抵消末字母字距，保持光学居中 */
+  text-transform: uppercase;
+}
 
 /* 3D 标签容器 */
 #labels { position: absolute; inset: 0; overflow: hidden; z-index: 5; pointer-events: none; }
