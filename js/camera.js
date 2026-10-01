@@ -26,6 +26,8 @@
   const MIN_DIST = 0.02;       // 20 m
   const MAX_DIST = 2.6e10;     // 足以纳入海王星轨道（45 亿 km）的全景
 
+  const _look = new THREE.Vector3();
+
   function init(canvasEl) {
     canvas = canvasEl;
 
@@ -52,7 +54,8 @@
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const k = Math.exp(e.deltaY * 0.0012);
+      // 灵敏度 0.002/δ：一格滚轮约 22% 变距（原 0.0012 ≈ 13%），手感更跟手
+      const k = Math.exp(e.deltaY * 0.002);
       state.dist = Math.max(MIN_DIST, Math.min(MAX_DIST, state.dist * k));
       state.anim = null;
       // 不直接同步 sDist：update() 中按帧率无关的指数缓动追踪目标距离，实现平滑缩放
@@ -137,13 +140,30 @@
     };
   }
 
-  /* 启动序章：自黄道上方极远处推近至 Cassini */
+  /* 启动序章：自黄道上方极远处推近至 Cassini。
+     推近与旋转在同一段过渡内同时运作：距离沿用 flyTo 的缓动时间表，
+     角度用 ease-out 时间表——开场即以可见角速度旋转，随推近同步减速归位，
+     避免「先放大、后旋转」的割裂感 */
   function intro(durationSec) {
     state.focusName = 'cassini';
-    state.theta = 2.35; state.phi = 0.72;
-    state.dist = 1.8e10; state.sDist = 1.8e10;
-    state.sTheta = 2.35; state.sPhi = 0.72;
-    flyTo('cassini', { dist: 4.2e6, theta: 0.9, phi: 1.05, duration: durationSec || 5 });
+    const fromTheta = 2.35, fromPhi = 0.72, toTheta = 0.9, toPhi = 1.05;
+    const fromDist = 1.8e10, toDist = 4.2e6;
+    const dur = (durationSec || 5) * 1000;
+    state.theta = toTheta; state.phi = toPhi;
+    state.dist = fromDist; state.sDist = fromDist;
+    state.sTheta = fromTheta; state.sPhi = fromPhi;
+    const start = performance.now();
+    state.anim = (now) => {
+      let k = (now - start) / dur;
+      if (k >= 1) k = 1;
+      const eZoom = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2; // 距离：与 flyTo 一致的缓动
+      const eRot = 1 - Math.pow(1 - k, 1.7);                                   // 角度：全程可见的同步旋转
+      state.sDist = Math.exp(Math.log(fromDist) * (1 - eZoom) + Math.log(toDist) * eZoom);
+      state.dist = state.sDist;
+      state.sTheta = fromTheta * (1 - eRot) + toTheta * eRot;
+      state.sPhi = fromPhi * (1 - eRot) + toPhi * eRot;
+      if (k >= 1) state.anim = null;
+    };
   }
 
   /* 每帧更新。bodyWorld: name -> [x,y,z]（three 系世界坐标），cassWorld: Cassini 世界坐标 */
@@ -179,16 +199,20 @@
     }
     const dEff = Math.max(state.sDist, minD);
 
-    // 帧率无关的指数缓动：旋转/平移稍缓（拖拽带轻微平滑），缩放追踪略快
+    // 帧率无关的指数缓动：拖拽旋转低阻尼紧贴手势（9→16），缩放/平移同步收紧。
+    // 过渡动画（flyTo/intro）期间 sTheta/sPhi/sDist 由 anim 时间表独占，
+    // 不再叠加指数缓动的二次牵引——缓动曲线按设计执行，落点与速度连续。
     const dtS = lastUpdate ? Math.min(0.1, Math.max(0, (now - lastUpdate) / 1000)) : 1 / 60;
     lastUpdate = now;
-    const smRot = 1 - Math.exp(-dtS * 9);
-    const sm = 1 - Math.exp(-dtS * 12);
-    state.sTheta += (state.theta - state.sTheta) * smRot;
-    state.sPhi += (state.phi - state.sPhi) * smRot;
+    const smRot = 1 - Math.exp(-dtS * 16);
+    const sm = 1 - Math.exp(-dtS * 16);
+    if (!state.anim) {
+      state.sTheta += (state.theta - state.sTheta) * smRot;
+      state.sPhi += (state.phi - state.sPhi) * smRot;
+      state.sDist = Math.exp(Math.log(state.sDist) + (Math.log(state.dist) - Math.log(state.sDist)) * sm);
+    }
     state.panSX += (state.panX - state.panSX) * sm;
     state.panSY += (state.panY - state.panSY) * sm;
-    state.sDist = Math.exp(Math.log(state.sDist) + (Math.log(state.dist) - Math.log(state.sDist)) * sm);
 
     // 严格单位球坐标偏移：旋转不改变视距
     const st = Math.sin(state.sTheta), ct = Math.cos(state.sTheta);
@@ -215,10 +239,9 @@
     scene.setCameraWorld(cam);
     const camObj = scene.camera;
     camObj.position.set(0, 0, 0);
-    const look = new THREE.Vector3(
-      tgt[0] - cam[0], tgt[1] - cam[1], tgt[2] - cam[2]);
-    if (look.lengthSq() < 1e-24) look.set(0, 0, -1);
-    camObj.lookAt(look);
+    _look.set(tgt[0] - cam[0], tgt[1] - cam[1], tgt[2] - cam[2]);
+    if (_look.lengthSq() < 1e-24) _look.set(0, 0, -1);
+    camObj.lookAt(_look);
     camObj.updateMatrixWorld(); // 立即生效，避免标签投影滞后一帧
   }
 
