@@ -361,6 +361,135 @@
     return canvas;
   }
 
+  /* —— 气态行星环纹理（item 4）：u = 归一化半径，alpha/亮度按真实光深 —— */
+
+  /* 木星环（92000–226000 km）：halo（向内衰减）+ 主环（122500–129000，最亮、
+   * 外缘锐利）+ gossamer 双瓣（Amalthea 182000 / Thebe 226000 外缘）。
+   * 真实木星环为暗红尘埃环、正照相几乎不可见 → alpha 峰值仅 ~0.28 */
+  function jupiterRingTexture() {
+    const w = 1024, h = 8;
+    const canvas = makeCanvas(w, h);
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(w, h);
+    const noise = valueNoise(333);
+    const km0 = 92000, km1 = 226000;
+    for (let x = 0; x < w; x++) {
+      const km = km0 + (x / w) * (km1 - km0);
+      let tone = 0, alpha = 0;
+      if (km < 122500) {            // halo
+        const t = (km - km0) / (122500 - km0);
+        tone = 0.30; alpha = 0.015 + 0.065 * t * t;
+      } else if (km < 129000) {     // main ring：内缘渐入、外缘锐利
+        const t = (km - 122500) / 6500;
+        tone = 0.38 + 0.20 * t;
+        alpha = 0.28 * Math.min(1, t * 6) * (0.72 + 0.28 * t);
+      } else {                      // gossamer：Amalthea 瓣 → Thebe 瓣（更弱）
+        const g = Math.max(0, 1 - (km - 129000) / 97000);
+        tone = 0.26;
+        alpha = 0.045 * g * g * (km < 182000 ? 1 : 0.55);
+      }
+      const fine = fbm(noise, x / w * 90, 0.5, 3, 2, 0.5);
+      alpha = Math.max(0, Math.min(1, alpha * (0.8 + 0.4 * fine)));
+      const r = (tone * 232) | 0, g2 = (tone * 196) | 0, b = (tone * 158) | 0;
+      for (let y = 0; y < h; y++) {
+        const o = (y * w + x) * 4;
+        img.data[o] = r; img.data[o + 1] = g2; img.data[o + 2] = b; img.data[o + 3] = (alpha * 255) | 0;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas;
+  }
+
+  /* 天王星环（37500–52500 km）：炭黑窄环（真实反照率 ~0.03）。
+   * 窄环真实宽度 10–100 km 不可见，取 ~130–280 km 夸张以供辨认；
+   * ε 环最宽最亮，λ 极暗。alpha 按真实相对亮度。 */
+  function uranusRingTexture() {
+    const w = 1024, h = 8;
+    const canvas = makeCanvas(w, h);
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(w, h);
+    const km0 = 37500, km1 = 52500;
+    // [中心 km, 半宽 km, alpha]
+    const BANDS = [
+      [39500, 1550, 0.05],   // ζ / 1986U2R 宽弱尘环
+      [41837, 65, 0.38], [42234, 65, 0.38], [42571, 65, 0.38],   // 6 / 5 / 4
+      [44718, 90, 0.42], [45661, 90, 0.42],                      // α / β
+      [47176, 75, 0.30], [47627, 65, 0.36], [48300, 75, 0.36],   // η / γ / δ
+      [50024, 60, 0.14],                                         // λ（极暗）
+      [51149, 140, 0.55],                                        // ε（最宽最亮）
+    ];
+    for (let x = 0; x < w; x++) {
+      const km = km0 + (x / w) * (km1 - km0);
+      let alpha = 0;
+      for (const [c, hw, a] of BANDS) {
+        const d = (km - c) / hw;
+        if (d > -2.2 && d < 2.2) alpha += a * Math.exp(-0.5 * d * d);
+      }
+      alpha = Math.min(1, alpha);
+      const v = 58;   // 炭黑（真实天王星环接近黑色）
+      for (let y = 0; y < h; y++) {
+        const o = (y * w + x) * 4;
+        img.data[o] = v; img.data[o + 1] = v - 2; img.data[o + 2] = v - 4; img.data[o + 3] = (alpha * 255) | 0;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas;
+  }
+
+  /* 海王星环（40000–64000 km）：Galle 宽弱环 + Le Verrier + Lassell 高原 +
+   * Arago + Adams（62930 km，含 5 条真实亮弧 Courage/Liberté/Égalité×2/Fraternité）。
+   * v = 方位角（u = 半径），弧段按真实相对亮度。整体极淡（真实反照率 ~0.05）。 */
+  function neptuneRingTexture() {
+    const w = 1024, h = 256;
+    const canvas = makeCanvas(w, h);
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(w, h);
+    const km0 = 40000, km1 = 64000;
+    const ADAMS = 62930, ADAMS_HW = 150;
+    // Adams 亮弧 [方位角°, 半宽°, alpha]
+    const ARCS = [
+      [8, 1.5, 0.40], [44, 2.5, 0.45], [62, 1.8, 0.45], [69, 1.8, 0.45], [80, 3.5, 0.50],
+    ];
+    function baseProfile(km) {
+      let alpha = 0, tone = 0.30;
+      if (km > 40900 && km < 42900) {          // Galle：宽而弱
+        const t = (km - 40900) / 2000;
+        alpha += 0.05 * Math.sin(Math.min(1, Math.max(0, t)) * Math.PI);
+      }
+      { const d = (km - 53200) / 110;          // Le Verrier 窄环
+        if (d > -2.2 && d < 2.2) alpha += 0.22 * Math.exp(-0.5 * d * d); }
+      if (km > 53200 && km < 57200) alpha += 0.028;   // Lassell 高原
+      { const d = (km - 57200) / 90;           // Arago（极弱）
+        if (d > -2.2 && d < 2.2) alpha += 0.05 * Math.exp(-0.5 * d * d); }
+      { const d = (km - ADAMS) / ADAMS_HW;     // Adams：弥散基底环
+        if (d > -2.5 && d < 2.5) { alpha += 0.10 * Math.exp(-0.5 * d * d); tone = 0.34; } }
+      return [alpha, tone];
+    }
+    for (let x = 0; x < w; x++) {
+      const km = km0 + (x / w) * (km1 - km0);
+      const [bAlpha, tone] = baseProfile(km);
+      const dAdams = (km - ADAMS) / ADAMS_HW;
+      for (let y = 0; y < h; y++) {
+        const deg = (y / h) * 360;
+        let alpha = bAlpha;
+        if (Math.abs(dAdams) < 1.4) {          // 弧段只出现在 Adams 环半径附近
+          const radial = Math.exp(-0.5 * dAdams * dAdams);
+          for (const [c, hwA, a] of ARCS) {
+            let dd = deg - c; if (dd > 180) dd -= 360; if (dd < -180) dd += 360;
+            dd /= hwA;
+            if (dd > -2.5 && dd < 2.5) alpha += a * radial * Math.exp(-0.5 * dd * dd);
+          }
+        }
+        alpha = Math.min(1, alpha);
+        const o = (y * w + x) * 4;
+        img.data[o] = (tone * 128) | 0; img.data[o + 1] = (tone * 108) | 0; img.data[o + 2] = (tone * 98) | 0;
+        img.data[o + 3] = (alpha * 255) | 0;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas;
+  }
+
   function canvasToTexture(THREE, canvas, opts) {
     const tex = new THREE.CanvasTexture(canvas);
     if (opts && opts.anisotropy) tex.anisotropy = opts.anisotropy;
@@ -492,7 +621,10 @@
       return c;
     },
     clouds: () => earthClouds(),
-    ring: () => ringTexture()
+    ring: () => ringTexture(),
+    ringJupiter: () => jupiterRingTexture(),
+    ringUranus: () => uranusRingTexture(),
+    ringNeptune: () => neptuneRingTexture()
   };
 
   const cache = new Map();
