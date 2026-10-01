@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Cassini–Huygens 历史飞行数据 · 3D 轨迹可视化 (1997–2017)</title>
-<link rel="stylesheet" href="css/style.css?v=2026130">
+<link rel="stylesheet" href="css/style.css?v=2026204">
 </head>
 <body>
 <div id="app">
@@ -15,14 +15,21 @@
   <div id="topbar">
     <div id="brand">
       <p>INTERPLANETARY TRAJECTORY REPLAY · 1997–2017 · EPHEMERIS: NASA EYES ON THE SOLAR SYSTEM</p>
-      <h1>Cassini–Huygens 历史飞行数据</h1>
+      <h1>Cassini–Huygens <span class="h1-zh">历史飞行数据</span></h1>
     </div>
     <div id="view-buttons">
       <button class="view-btn active" data-view="follow" title="镜头跟随 Cassini">跟随 Cassini</button>
     </div>
     <div id="hud-right">
-      <button id="btn-settings" title="设置">⚙&#xFE0E;</button>
-      <button id="btn-help" title="操作说明">?</button>
+      <button id="btn-fullscreen" title="全屏显示" aria-label="全屏显示">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+      </button>
+      <button id="btn-settings" title="设置" aria-label="设置">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <button id="btn-help" title="操作说明" aria-label="操作说明">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      </button>
       <!-- 右上角设置菜单：全局视角 / 真实光照 / 轨迹开关 -->
       <div id="settings-panel" class="hidden">
         <div class="set-label">视角</div>
@@ -57,23 +64,30 @@
     </div>
   </div>
 
-  <!-- 状态 HUD -->
-  <div id="hud">
-    <div id="hud-date">1997-10-15 08:43 UTC</div>
-    <div id="hud-phase">发射 · 地球逃逸</div>
-    <div id="hud-dist">—</div>
-    <div id="hud-vel">—</div>
-  </div>
+  <!-- 状态 HUD（移动端折叠进左上角 ◉ 弹出按钮） -->
+  <div id="hud-stack">
+    <button id="hud-toggle" title="状态信息" aria-label="显示/隐藏状态信息">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>
+    </button>
+    <div id="hud">
+      <div id="hud-date">1997-10-15 08:43 UTC</div>
+      <div id="hud-phase">发射 · 地球逃逸</div>
+      <div id="hud-dist">—</div>
+      <div id="hud-vel">—</div>
+    </div>
 
-  <!-- 天体朝向与自转状态（item 9，聚焦行星/卫星时显示） -->
-  <div id="body-info" class="hidden">
-    <div id="bi-name">—</div>
-    <div id="bi-rows"></div>
+    <!-- 天体朝向与自转状态（item 9，聚焦行星/卫星时显示） -->
+    <div id="body-info" class="hidden">
+      <div id="bi-name">—</div>
+      <div id="bi-rows"></div>
+    </div>
   </div>
 
   <!-- 事件信息卡 -->
   <div id="event-card" class="hidden">
-    <button id="event-close">×</button>
+    <button id="event-close" aria-label="关闭事件卡">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
     <div id="event-date"></div>
     <h2 id="event-title"></h2>
     <p id="event-text"></p>
@@ -83,7 +97,9 @@
   <div id="event-panel" class="collapsed">
     <div id="event-panel-head">
       <span>任务事件</span>
-      <button id="event-toggle">‹</button>
+      <button id="event-toggle" aria-label="展开/收起事件列表">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
     </div>
     <div id="event-list"></div>
   </div>
@@ -97,10 +113,11 @@
         <li><b>滚轮</b> — 缩放</li>
         <li><b>右键拖动</b> — 平移视野中心</li>
         <li><b>点击行星 / 卫星标签</b> — 平滑过渡聚焦该天体</li>
-        <li><b>点击时间轴圆点 / 事件列表</b> — 跳转事件并聚焦</li>
+        <li><b>点击时间轴圆点 / 事件列表</b> — 跳转事件并聚焦 Cassini</li>
         <li><b>时间条拖动</b> — 任意时刻回放（条左半为倒退半程，右半为快进半程）</li>
         <li><b>空格</b> — 播放 / 暂停</li>
         <li><b>时间条上方速率滑块</b> — 时间流速（中点保持，左=倒放，右=正放）</li>
+        <li><b>右上角 ⛶</b> — 全屏显示 / 退出全屏</li>
         <li><b>右上角 ⚙ 设置</b> — 全局视角、真实光照、行星 / Cassini 轨迹开关、未来轨迹显隐、近期/全部历史轨迹切换</li>
       </ul>
       <p>行星尺寸与轨道距离均为真实比例；Cassini 进入行星引力影响球（Venus / Earth / Jupiter / Saturn）时，自动叠加显示相对该行星的轨迹，两条轨迹的交点即 Cassini 实际位置，日心轨迹同步降低亮度；在土星系统内进一步接近卫星（Titan / Enceladus / Rhea / Dione / Iapetus 等）时，日心与土星相对轨迹再降亮度并淡入相对卫星的二级轨迹；离开影响球后自动淡出恢复。点击 Huygens 标签或事件卡可跟随惠更斯探测器（2005-01-14 着陆 Titan、失联后自动移除实体）。飞船模型为真实尺寸（缩小视角时随之缩至真实大小），高增益天线按任务实际姿态实时指向 Earth。</p>
@@ -146,16 +163,16 @@
 <script src="lib/DRACOLoader.js?v=2026103"></script>
 <script src="data/textures.js?v=2026121"></script>
 <script src="data/stars.js?v=2026094"></script>
-<script src="data/cassini_data.js?v=2026201"></script>
-<script src="data/moons_data.js?v=2026201"></script>
+<script src="data/cassini_data.js?v=2026202"></script>
+<script src="data/moons_data.js?v=2026202"></script>
 <script src="data/models.js?v=2026103"></script>
 <script src="js/events.js?v=2026201"></script>
 <script src="js/textures.js?v=2026102"></script>
 <script src="js/huygens.js?v=2026201"></script>
 <script src="js/cassini_model.js?v=2026103"></script>
-<script src="js/scene.js?v=2026201"></script>
+<script src="js/scene.js?v=2026205"></script>
 <script src="js/camera.js?v=2026112"></script>
 <script src="js/timeline.js?v=2026124"></script>
-<script src="js/main.js?v=2026201"></script>
+<script src="js/main.js?v=2026203"></script>
 </body>
 </html>

@@ -767,11 +767,13 @@
 
       if (def.clouds) {
         // 独立云层球：真实 NASA 云量贴图（白云 + alpha 通道），与地表贴图分离；
-        // 复用表面分段球保证轮廓一致，抬升 1.2% 半径避免深度冲突
+        // 复用表面分段球保证轮廓一致。真实比例：地球云层厚 1–10 km，取云顶
+        // 10 km（R⊕=6371 km，仅 +0.16%）；同分段球面平行、法向间距恒定，
+        // 对数深度缓冲下不会与地表深度冲突
         const ct = loadTex('earthClouds', aniso);
         const cm = new THREE.MeshLambertMaterial({ map: ct, transparent: true, opacity: 0.9, depthWrite: false });
         const clouds = new THREE.Mesh(geo, cm);
-        clouds.scale.setScalar(def.radius * 1.012);
+        clouds.scale.setScalar(def.radius + 10);
         tiltGroup.add(clouds);
         entry.clouds = clouds;
       }

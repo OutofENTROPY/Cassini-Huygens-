@@ -302,9 +302,10 @@ def smoothstep(x):
 
 def conic_peri_kf(leg):
     """飞掠腿中最接近近拱点的根数关键帧（|M| 最小）。
-    dynamo 飞掠腿时间域只有近掠前后数小时且出射臂为镜像假数据，
-    但其根数本身就是一条完整的行星中心双曲线（近掠距离真实），
-    按二体问题外推即可覆盖整个 SOI 穿越段。"""
+    dynamo 飞掠腿时间域只有近掠前后数小时，且其圆锥曲线相对真实轨迹整体
+    镜像（角动量反平行，实测三处飞掠 179–180°）——只有近掠距离 rp 与近拱点
+    时刻 t_peri 是真实任务值（与任务实录逐一吻合），供 rebuild_flyby 构造
+    正确双曲线时钉定近拱点；方向不可外推使用。"""
     pts = load_points(leg)["points"]
     return min(pts, key=lambda p: abs(p[4]))
 
@@ -335,6 +336,300 @@ def conic_cross(kf, t_peri, r_soi, after):
         else:
             hi = mid
     return 0.5 * (lo + hi)
+
+
+def cross3(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def dot3(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def unit3(v):
+    n = math.sqrt(dot3(v, v)) or 1.0
+    return (v[0] / n, v[1] / n, v[2] / n)
+
+
+def ang3(a, b):
+    """两向量夹角（度）"""
+    return math.degrees(math.acos(max(-1.0, min(1.0, dot3(unit3(a), unit3(b))))))
+
+
+def rodrigues(v, k, theta):
+    """向量 v 绕单位轴 k 旋转 theta（右手）"""
+    c, s = math.cos(theta), math.sin(theta)
+    kv = cross3(k, v)
+    kdv = dot3(k, v)
+    return tuple(v[i] * c + kv[i] * s + k[i] * kdv * (1.0 - c) for i in range(3))
+
+
+def solve_hyp(M, e):
+    """双曲线开普勒方程 M = e·sinhH − H（dM/dH = e·coshH − 1 > 0 单调），牛顿法。
+    H 可达 ±7（f32 网格窗口内 |M| ≤ ~10³），cosh 无溢出风险。"""
+    H = math.asinh(M / e)
+    for _ in range(60):
+        f = e * math.sinh(H) - H - M
+        d = f / (e * math.cosh(H) - 1.0)
+        H -= d
+        if abs(d) < 1e-12:
+            break
+    return H
+
+
+def hyp_conic(mu, A, e, P, Q, t_peri):
+    """行星中心双曲线求值器（黄道系，km/s）。
+    P → 近拱点方向（单位），Q → 近拱点处运动方向（单位，P×Q=ĥ），
+    A = −a > 0（半长轴绝对值），e > 1。
+    r(H) = A(e−coshH)·P + A√(e²−1)·sinhH·Q；M = e·sinhH − H = n(t−t_peri)。"""
+    n = math.sqrt(mu / (A ** 3))
+    sq = math.sqrt(e * e - 1.0)
+
+    def pos(t):
+        H = solve_hyp(n * (t - t_peri), e)
+        x = A * (e - math.cosh(H))
+        y = A * sq * math.sinh(H)
+        return (x * P[0] + y * Q[0], x * P[1] + y * Q[1], x * P[2] + y * Q[2])
+
+    def vel(t, dt=30.0):
+        p0, p1 = pos(t - dt), pos(t + dt)
+        return tuple((p1[k] - p0[k]) / (2.0 * dt) for k in range(3))
+
+    def radius_t(r_target, after):
+        """|r| = r_target 的穿越时刻（after=False 入臂 / True 出臂）。
+        r = A(e·coshH − 1) → H = arcosh((r/A + 1)/e)"""
+        H = math.acosh((r_target / A + 1.0) / e)
+        if not after:
+            H = -H
+        return t_peri + (e * math.sinh(H) - H) / n
+
+    def bend_at(r_x):
+        """入臂 |r|=r_x 处【速度方向】相对入射渐近线已累积的转弯角（弧度）。
+        v̂(ν) ∝ −sinν·P + (e+cosν)·Q；渐近线在 ν=−ν∞。
+        注意速度方向转弯 ≠ 真近点角差（ν∞−ν_x）：SOI 处前者 ~0.03°、后者 ~1.1°。"""
+        p = A * (e * e - 1.0)
+        nx = math.acos(max(-1.0, min(1.0, (p / r_x - 1.0) / e)))   # |ν_x|
+        ni = math.acos(-1.0 / e)                                   # ν∞
+        u1, u2 = math.sin(nx), e + math.cos(nx)                    # v̂(−ν_x) 沿 (P,Q)
+        w1, w2 = math.sin(ni), e - 1.0 / e                         # v̂∞ 沿 (P,Q)
+        cospsi = (u1 * w1 + u2 * w2) / (math.hypot(u1, u2) * math.hypot(w1, w2))
+        return math.acos(max(-1.0, min(1.0, cospsi)))
+
+    return {"pos": pos, "vel": vel, "radius_t": radius_t, "bend_at": bend_at,
+            "A": A, "e": e, "t_peri": t_peri}
+
+
+def def_mu(path):
+    """def.dyn 头部的引力参数 μ（NASA Eyes 同源；行星中心腿 mu2 = 中心天体 GM，
+    如 sc_cassini/venus/flyby1/orb mu2 = 324858.599 = Venus GM）"""
+    from fetch_data import parse_def
+    ddir = os.path.join(RAW, path.replace("/", "_"))
+    with open(os.path.join(ddir, "def.dyn"), "rb") as f:
+        return parse_def(f.read())["mu2"]
+def build_launch_escape():
+    """发射逃逸段重构（与飞掠腿同族的定向缺陷修复）。
+
+    dynamo 的 launch 腿（地球中心双曲线）径向剖面、能量与近拱点均为真实任务值：
+    v∞=4.09 km/s（C3≈16.7，实测 16.60）、rp=6,645 km≈入轨近地点、首帧
+    r=8,284 km @ 1997-10-15 09:27 与根数自洽——但其速度方向相对真实出射方向
+    偏 ~78–84°（与飞掠腿的镜像缺陷同族：直接渲染会把逃逸段画到错误一侧，
+    并与 sun/1 真实弧形成倒钩）。正确出射几何由真实巡航腿 sun/1 在腿边界
+    t_b（=launch 腿终点 1997-10-18 16:01，r_rel≈124 万 km）的地球系状态钉定：
+      轨道面 ĥ = unit(r_rel × v_rel)（真实远场）；
+      v∞² = |v_rel|² − 2μ/r_rel（能量）→ A = μ/v∞²，e = 1 + rp/A（rp 钉腿根数）；
+      渐近线 = 实测 v̂(t_b) 沿 ĥ 前旋剩余转弯 ψ（出臂到无穷远尚差的 ~0.6°，
+      与飞掠入臂的 −ψ 回退互为镜像；符号取与 sun/1 边界速度方向差最小者）；
+      t_peri 钉腿根数（入轨近地点时刻）。
+    t_b 在地球 SOI（92.5 万 km）之外，日心摄动使该处密切根数外推出的
+    rp（7,868 km）偏离真实近地点，故 rp 不用状态向量反解值而钉腿根数；
+    由此产生的边界处 ~数千 km 径向残差由烘焙端 36h 混合窗吸收。
+    返回 {"con", "t0", "tb", "t_peri", "rp"}，数据缺失返回 None。"""
+    leg = "sc_cassini/earth/launch/orb"
+    pts = load_points(leg)["points"]
+    if len(pts) < 2:
+        return None
+    mu = def_mu(leg)
+    kf = min(pts, key=lambda p: abs(p[4]))
+    t_peri = kf[0] - kf[4] / math.sqrt(mu / abs(kf[1]) ** 3)
+    rp = abs(kf[1]) * (kf[2] - 1.0)
+    t0, tb = pts[0][0], pts[-1][0]
+
+    def rel_state(t, dt=600.0):
+        pc0 = pos_at("earth/sun/orb", t - dt)
+        pc1 = pos_at("earth/sun/orb", t + dt)
+        pl0 = pos_at("sc_cassini/sun/1/orb", t - dt)
+        pl1 = pos_at("sc_cassini/sun/1/orb", t + dt)
+        pt = pos_at("sc_cassini/sun/1/orb", t)
+        ce = pos_at("earth/sun/orb", t)
+        r = (pt[0] - ce[0], pt[1] - ce[1], pt[2] - ce[2])
+        v = tuple(((pl1[k] - pl0[k]) - (pc1[k] - pc0[k])) / (2.0 * dt) for k in range(3))
+        return r, v
+
+    r_rel, v_rel = rel_state(tb)
+    rr = math.sqrt(dot3(r_rel, r_rel))
+    vinf2 = dot3(v_rel, v_rel) - 2.0 * mu / rr
+    A = mu / vinf2
+    e = 1.0 + rp / A
+    hh = unit3(cross3(r_rel, v_rel))
+    # 剩余转弯 ψ（公式与 hyp_conic.bend_at 相同，A/e 已定，无需先建圆锥曲线）
+    p_ = A * (e * e - 1.0)
+    nx = math.acos(max(-1.0, min(1.0, (p_ / rr - 1.0) / e)))
+    ni = math.acos(-1.0 / e)
+    u1, u2 = math.sin(nx), e + math.cos(nx)
+    w1, w2 = math.sin(ni), e - 1.0 / e
+    psi = math.acos(max(-1.0, min(1.0, (u1 * w1 + u2 * w2) /
+                                       (math.hypot(u1, u2) * math.hypot(w1, w2)))))
+    sq = math.sqrt(e * e - 1.0)
+    # 出臂反解 P（与飞掠入臂公式互为镜像）：v̂∞⁺ = (−P + √(e²−1)Q)/e
+    #   → P = −(v̂∞⁺ + √(e²−1)·(ĥ×v̂∞⁺))/e（飞掠入臂为 P = (v̂∞⁻ − √(e²−1)·ĥ×v̂∞⁻)/e）
+    best = None
+    for sgn in (+1.0, -1.0):
+        vinf = rodrigues(unit3(v_rel), hh, sgn * psi)
+        w = cross3(hh, vinf)
+        P = unit3(tuple(-(vinf[k] + sq * w[k]) / e for k in range(3)))
+        con = hyp_conic(mu, A, e, P, cross3(hh, P), t_peri)
+        a_j = ang3(con["vel"](tb), v_rel)
+        if best is None or a_j < best[0]:
+            best = (a_j, con)
+    a_j, con = best
+    gap = math.sqrt(sum((con["pos"](tb)[k] - r_rel[k]) ** 2 for k in range(3)))
+    r0 = con["pos"](t0)
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(t_peri + J2000_S))
+    print(f"  [Launch] rp={rp:,.0f} km（腿根数=入轨近地点）  t_peri={ts}  "
+          f"v∞={math.sqrt(vinf2):.3f} km/s（C3={vinf2:.2f}，实测 16.60）")
+    print(f"    边界 t_b 对比：位置差 {gap:,.0f} km  速度方向差 {a_j:.3f}°"
+          f"（36h 混合窗吸收）；首帧 |r|={math.sqrt(dot3(r0, r0)):,.0f} km（腿实测 8,284）")
+    if a_j > 2.0:
+        print("    !! 警告：重构双曲线与 sun/1 边界速度方向差 >2°，请核查")
+    return {"con": con, "t0": t0, "tb": tb, "t_peri": t_peri, "rp": rp}
+
+
+def build_saturn_approach():
+    """土星 SOI 接近段重构（与飞掠/发射腿同族的定向缺陷修复）。
+
+    dynamo saturn/orb 腿（土心，2004-05-30 20:01 起）的入臂双曲线整体镜像：
+    NAIF SPICE(-82) 仲裁实测 ∠(h_leg, h_true) 在 2004-06 全程 172°→180°
+    （反平行），∠(P_leg, P_true) 仅 0.4°–7°（近拱点方向一致）——首键帧当日
+    位置即差 11,947,264 km。与飞掠腿/发射腿同一伪造模式：只有 rp 与 t_peri
+    是真实任务值（rp≈80,289 km、t_peri=2004-07-01 ≈02:37 UTC）。直接渲染会把
+    接近段画到土星的错误一侧（与 NASA Eyes 对比可见的"镜像"缺陷）。
+
+    正确入臂几何由「sun/4 真实边界状态 + 腿根数 rp/t_peri」构造（sun/4 为
+    真实历表：SPICE 全段误差 ≤18 万 km；边界 t0 = 两腿交界 = saturn/orb
+    首键帧）：
+      轨道面 ĥ = unit(r_rel × v_rel)（真实远场）；
+      v∞² = |v_rel|² − 2μ/r_rel → A 初值 = μ/v∞²，e = 1 + rp/A（rp 钉腿根数）；
+      渐近线 = 实测 v̂(t0) 沿 ĥ 回退剩余转弯 ψ（入臂；符号自动试取）；
+      A 反解：钉定 rp/t_peri 不动，沿迹相位差（太阳潮 ~31 天累积 11.4 万 km）
+      由 A 吸收（SPICE 仲裁：中程误差 113k→12k 改善为 27k→11k km）；
+      t_peri 钉腿根数（SOI 捕获近拱点）。
+    返回 {"con", "t0", "t_peri", "rp", "gap", "vinf"}，数据缺失返回 None。"""
+    leg = "sc_cassini/saturn/orb"
+    pts = load_points(leg)["points"]
+    if len(pts) < 2:
+        return None
+    mu = def_mu(leg)
+    # SOI 捕获近拱点帧：入臂 90 天窗口内 e>1（双曲线）的根数帧中取 |M0| 最小
+    # （saturn/orb 全腿 1570 帧，环绕段每个近拱后都有 M0≈0 的帧，不可全局取）
+    hyp_kfs = [p for p in pts if p[2] > 1.0 and p[0] < pts[0][0] + 90 * 86400.0]
+    kf = min(hyp_kfs, key=lambda p: abs(p[4]))
+    t_peri = kf[0] - kf[4] / kf[3]
+    rp = conic_r(kf, t_peri)
+    t0 = pts[0][0]   # 两腿交界（= sun/4 终点 = saturn/orb 首键帧）
+
+    def rel_state(t, dt=600.0):
+        pl0 = pos_at("sc_cassini/sun/4/orb", t - dt)
+        pl1 = pos_at("sc_cassini/sun/4/orb", t + dt)
+        pt = pos_at("sc_cassini/sun/4/orb", t)
+        c0 = pos_at("saturn/sun/orb", t - dt)
+        c1 = pos_at("saturn/sun/orb", t + dt)
+        cc = pos_at("saturn/sun/orb", t)
+        r = (pt[0] - cc[0], pt[1] - cc[1], pt[2] - cc[2])
+        v = tuple(((pl1[k] - pl0[k]) - (c1[k] - c0[k])) / (2.0 * dt) for k in range(3))
+        return r, v
+
+    r_rel, v_rel = rel_state(t0)
+    rr = math.sqrt(dot3(r_rel, r_rel))
+    vinf2 = dot3(v_rel, v_rel) - 2.0 * mu / rr
+    A = mu / vinf2
+    e = 1.0 + rp / A
+    hh = unit3(cross3(r_rel, v_rel))
+    # 剩余转弯 ψ（公式与 hyp_conic.bend_at 相同；A/e 已定无需先建圆锥曲线）
+    p_ = A * (e * e - 1.0)
+    nx = math.acos(max(-1.0, min(1.0, (p_ / rr - 1.0) / e)))
+    ni = math.acos(-1.0 / e)
+    u1, u2 = math.sin(nx), e + math.cos(nx)
+    w1, w2 = math.sin(ni), e - 1.0 / e
+    psi = math.acos(max(-1.0, min(1.0, (u1 * w1 + u2 * w2) /
+                                       (math.hypot(u1, u2) * math.hypot(w1, w2)))))
+    sq = math.sqrt(e * e - 1.0)
+    # 入臂反解 P（rebuild_flyby 同式）：v̂∞⁻ = (−P − √(e²−1)Q)/e
+    #   → P = (v̂∞⁻ − √(e²−1)·(ĥ×v̂∞⁻))/e；ψ 旋向符号自动试取
+    best = None
+    for sgn in (+1.0, -1.0):
+        vinf = rodrigues(unit3(v_rel), hh, sgn * psi)
+        w = cross3(hh, vinf)
+        P = unit3(tuple((vinf[k] - sq * w[k]) / e for k in range(3)))
+        con = hyp_conic(mu, A, e, P, cross3(hh, P), t_peri)
+        a_j = ang3(con["vel"](t0), v_rel)
+        if best is None or a_j < best[0]:
+            best = (a_j, sgn, P)
+    a_j, sgn, P = best
+
+    # 反解半长轴 A：钉定 rp/t_peri 不动，沿迹相位由 A 吸收（太阳潮在 17.2M km
+    # 处累积 ~31 天的相位差使位置残差达 11.4 万 km；A 增大 → 平均运动减小 →
+    # t0 相位后移，单调）。解出后边界位置残差 <10 km，6 月中程误差（SPICE
+    # 仲裁）由钉定版的 113k→12k km 改善为 ~27k→11k km，且无需宽混合窗。
+    def gap_along(A_x):
+        e_x = 1.0 + rp / A_x
+        sq_x = math.sqrt(e_x * e_x - 1.0)
+        p_x = A_x * (e_x * e_x - 1.0)
+        nx_x = math.acos(max(-1.0, min(1.0, (p_x / rr - 1.0) / e_x)))
+        ni_x = math.acos(-1.0 / e_x)
+        u_x1, u_x2 = math.sin(nx_x), e_x + math.cos(nx_x)
+        w_x1, w_x2 = math.sin(ni_x), e_x - 1.0 / e_x
+        psi_x = math.acos(max(-1.0, min(1.0, (u_x1 * w_x1 + u_x2 * w_x2) /
+                                             (math.hypot(u_x1, u_x2) * math.hypot(w_x1, w_x2)))))
+        vinf_x = rodrigues(unit3(v_rel), hh, sgn * psi_x)
+        w_x = cross3(hh, vinf_x)
+        P_x = unit3(tuple((vinf_x[k] - sq_x * w_x[k]) / e_x for k in range(3)))
+        con_x = hyp_conic(mu, A_x, e_x, P_x, cross3(hh, P_x), t_peri)
+        d = tuple(con_x["pos"](t0)[k] - r_rel[k] for k in range(3))
+        vhat = unit3(v_rel)
+        return dot3(d, vhat), con_x
+
+    lo_A, hi_A = 0.95 * A, 1.15 * A
+    s_lo, con_lo = gap_along(lo_A)
+    s_hi, _ = gap_along(hi_A)
+    if s_lo * s_hi > 0:
+        A = hi_A if abs(s_hi) < abs(s_lo) else lo_A
+        _, con = gap_along(A)
+    else:
+        for _ in range(60):
+            mid_A = 0.5 * (lo_A + hi_A)
+            s_mid, con_mid = gap_along(mid_A)
+            if abs(s_mid) < 10.0:
+                break
+            if (s_lo > 0) == (s_mid > 0):
+                lo_A, s_lo = mid_A, s_mid
+            else:
+                hi_A, s_hi = mid_A, s_mid
+        A = 0.5 * (lo_A + hi_A)
+        _, con = gap_along(A)
+    e = 1.0 + rp / A
+    gap = math.sqrt(sum((con["pos"](t0)[k] - r_rel[k]) ** 2 for k in range(3)))
+    a_j = ang3(con["vel"](t0), v_rel)
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(t_peri + J2000_S))
+    print(f"  [Saturn-approach] rp={rp:,.0f} km（腿根数=SOI 近拱点）  t_peri={ts}  "
+          f"v∞={math.sqrt(mu / A):.3f} km/s（实测 {math.sqrt(vinf2):.3f}，潮差被 A 吸收）  e={e:.4f}")
+    print(f"    边界 t0（两腿交界）：位置残差 {gap:,.0f} km  速度方向差 {a_j:.3f}°"
+          f"（混合窗吸收）；|r(t0)|={rr:,.0f} km")
+    if a_j > 2.0:
+        print("    !! 警告：重构双曲线与 sun/4 边界速度方向差 >2°，请核查")
+    return {"con": con, "t0": t0, "t_peri": t_peri, "rp": rp,
+            "gap": gap, "vinf": math.sqrt(mu / A)}
+
+
 _legs_cache = None
 
 
@@ -580,7 +875,8 @@ def main():
 
     # ---------- 卡西尼（分腿合成） ----------
     leg_specs = {
-        "sc_cassini/earth/launch/orb": ("earth/sun/orb", day / 144),
+        # launch 腿 150s：逃逸近拱段速度 ~10 km/s，600s 弦差数千 km（模型位置网格）
+        "sc_cassini/earth/launch/orb": ("earth/sun/orb", day / 576),
         "sc_cassini/sun/1/orb": (None, day / 4),
         "sc_cassini/venus/flyby1/orb": ("venus/sun/orb", day / 288),
         "sc_cassini/sun/2/orb": (None, day / 4),
@@ -607,6 +903,32 @@ def main():
             pts.append((p[0] + c[0], p[1] + c[1], p[2] + c[2]))
         leg_data[leg] = (t0, step, pts)
         print(f"cassini {leg}: {len(pts)} pts  ({t0:.0f}..{t1:.0f})")
+
+    # 发射逃逸腿重构：dynamo launch 腿方向被虚构（偏 ~80°），改用
+    # 「sun/1 真实边界状态 + 腿根数 rp/t_peri」构造的地球中心双曲线（见下）。
+    # 末端同样 36h 混入 sun/1 真实弧（与 merged 窗口一致，模型位置无跳变）。
+    lbuild = build_launch_escape()
+    sbuild = build_saturn_approach()
+    if lbuild:
+        lcon = lbuild["con"]
+        t0l, t1l = legs["sc_cassini/earth/launch/orb"]
+        step_l = leg_specs["sc_cassini/earth/launch/orb"][1]
+        n = int(round((t1l - t0l) / step_l)) + 1
+        pts_l = []
+        for i in range(n):
+            tt = t0l + i * step_l
+            r = lcon["pos"](tt)
+            c = pos_at("earth/sun/orb", tt)
+            cr = (r[0] + c[0], r[1] + c[1], r[2] + c[2])
+            if tt > t1l - 36 * 3600.0:
+                s = smoothstep((tt - (t1l - 36 * 3600.0)) / (36 * 3600.0))
+                sr = pos_at("sc_cassini/sun/1/orb", tt)
+                cr = (cr[0] + (sr[0] - cr[0]) * s,
+                      cr[1] + (sr[1] - cr[1]) * s,
+                      cr[2] + (sr[2] - cr[2]) * s)
+            pts_l.append(cr)
+        leg_data["sc_cassini/earth/launch/orb"] = (t0l, step_l, pts_l)
+        print(f"cassini launch leg REBUILT: {len(pts_l)} pts @150s（地球逃逸双曲线）")
 
     ordered = CASSINI_LEGS
     segs = []
@@ -696,11 +1018,13 @@ def main():
     # 只在近拱点附近相切（|A-B| 1.2~36k km），稍远即按 ~12-30 km/s 互为镜像分离，
     # 任何在行星邻域内的交叉淡化都会产生粗化折线/切角（V1 入臂曾达 31,127 km 弦差）。
     # 飞掠段整体由下方 SOI 窗口重构接管（行星中心双曲线 + SOI 边界平滑过渡）。
-    # 这里只保留两处巡航腿之间的衔接：
-    SPLICE_W = {
-        ("sc_cassini/earth/launch/orb", "sc_cassini/sun/1/orb"): 48 * 3600.0,
-        ("sc_cassini/sun/4/orb", "sc_cassini/saturn/orb"): 30 * 86400.0,
-    }
+    # 这里只保留一处巡航腿之间的衔接（launch→sun/1 已由逃逸段重构接管：
+    # 重构双曲线钉定 sun/1 边界真实状态，边界处天然连续，无需交叉淡化）。
+    # sun/4→saturn/orb 的 30 天交叉淡化已删除：该拼接曾把真实 sun/4 弧与
+    # 镜像的 saturn/orb 入臂弧（边界 gap 11,998,793 km）强行混合，2004-04-30
+    # ..05-30 的轨迹纯属捏造；接近段现由 build_saturn_approach 重构接管
+    # （重构双曲线钉定 sun/4 边界真实状态，交界处天然连续，无需淡化）。
+    SPLICE_W = {}
     PERI_SPLICE = set()
     center_of_leg = {leg: leg_specs[leg][0] for leg in leg_specs}
 
@@ -810,15 +1134,15 @@ def main():
 
     # ---------- 引力弹弓段轨道数据重构（SOI 窗口方案） ----------
     # 进入行星真实引力影响球（SOI_RADII）后：
-    #   相对行星的轨迹 = 飞掠腿近拱点根数外推的完整双曲线（近掠距离恢复真实值）；
+    #   相对行星的轨迹 = 「真实状态 + 真实近拱点」构造的行星中心双曲线
+    #     （dynamo 飞掠腿圆锥曲线整体镜像、不可外推——详见 rebuild_flyby）；
     #   日心轨迹      = planet32(t) + rel(t) 重构，使前端锚定后
     #                   anchor(行星运行时位置) + rel ≡ 日心轨迹顶点，
     #                   "相对轨迹 ∩ 日心轨迹 = Cassini 实际位置"逐点零偏差成立。
     # 窗口边界（SOI 穿越时刻）与巡航腿之间平滑过渡：过渡半宽 Δb = δ/8 km/s
-    # （δ = 边界处两套数据主张差），人工横向速度 ≤8 km/s ≪ 真实 ~30 km/s，
-    # 观感为一次平滑的借力转弯而非折角。dynamo 飞掠腿出射臂为镜像假数据，
-    # 重构区整体替换后不再进入轨迹；巡航腿之间的旧拼接仅保留 launch→sun/1、
-    # sun/4→saturn/orb 两处（见上）。
+# （δ = 边界处两套数据主张差），人工横向速度 ≤8 km/s ≪ 真实 ~30 km/s，
+# 观感为一次平滑的借力转弯而非折角。巡航腿之间的旧拼接仅保留
+# sun/4→saturn/orb 一处（launch→sun/1 由发射逃逸段重构接管，见 build_launch_escape）。
     merged = [(p[0], f32(p[1]), f32(p[2]), f32(p[3])) for p in merged]
     merged_t = [p[0] for p in merged]
 
@@ -886,40 +1210,87 @@ def main():
             prev, t = cur, t2
         return tin, tout
 
-    def rebuild_flyby(label, leg, cruise_a, cruise_b, planet, r_soi):
-        """飞掠段重构（双曲线权威窗口 + 外移漂移过渡），返回 SOI 穿越时刻 (tin, tout)。
+    def rebuild_flyby(label, leg, cruise_a, cruise_b, planet, r_soi, mu):
+        """飞掠段重构（真实双曲线权威窗口 + 外移漂移过渡），返回 SOI 穿越时刻 (tin, tout)。
 
-        dynamo 巡航腿（sun/N）与飞掠双曲线在行星近旁互为镜像：距离剖面几乎相同
-        （半径差 <1%）但方位相反，位置以 ~32 km/s 线性分离（实测 V1 ±6h 处
-        d ≈ 两侧半径之和）。因此在 SOI 边界做位置混合必然产生数十万公里级的
-        侧向摆动，且巡航弧自身会深入 SOI（V1 570k km < SOI 616.9k），造成
-        "进入→弹出→再进入"的锯齿（旧方案的弹弓轨迹异常根源）。
+        dynamo 飞掠腿的圆锥曲线相对真实轨迹整体镜像——角动量反平行（实测
+        V1/V2/Earth 的 h 与巡航腿实测转弯平面法向夹角 179–180°），只有近掠
+        距离与近拱点时刻是真实任务值（V1 284 km @ 1998-04-26 13:45 UTC、
+        V2 598 km @ 1999-06-24 20:30 UTC、Earth 1171 km @ 1999-08-18 03:28
+        UTC）。直接外推会把弹弓绕到行星错误的一侧（渲染 bug 的根源）。
 
-        新方案：
-          1. 双曲线权威窗口取 |conic| < 2.5×SOI（窗口内轨迹 = planet + conic，
-             近掠几何真实、SOI 穿越单一干净；巡航弧在窗口外半径 ≥ ~2.4×SOI，
-             不再进入 SOI）。
-          2. 过渡区放在 2.5×SOI 之外：半宽 B = δ/2.5 km/s（δ = 窗口边界处
-             巡航与双曲线的日心距离差，钳制 2–10 天）。两弧半径几乎相等，
-             混合表现为沿近圆弧的缓慢侧向漂移（≤ ~5 km/s ≪ 真实 ~30 km/s），
-             观感为平滑的借力离场而非折角/摆动。"""
+        正确的行星中心双曲线由「真实状态 + 真实近拱点」构造：
+          1. 轨道面 ĥ = unit(v_in × v_out)：v_in/v_out 取巡航腿（sun/N，远离
+             行星处为真实历表）在 SOI 穿越时刻的行星系速度；
+          2. 转弯角 δ = ∠(v_in, v_out)（方向测量，最稳）→ e = 1/sin(δ/2)；
+             半长轴 A = rp/(e−1)——近拱点 rp 钉在腿根数的真实任务值；
+          3. 入射渐近线 = 实测 v(SOI) 回退 bend(SOI)（双曲线到 SOI 边界已
+             累积的速度方向转弯，~0.03°），使边界处与真实入射弧严格相切；
+          4. 近拱点时刻 t_peri 取腿关键帧（与任务实录一致）。
+        交叉验证：由实测转弯角反解的 rp 与任务值闭合到 0.1–1%，出臂渐近线
+        与后继巡航腿速度方向一致（<0.5°）。
+        巡航弧与真实双曲线在 2.5×SOI 处仅差数千 km（真实轨迹在该处尚未被
+        明显弯曲），过渡区半宽 B = δ/2.5 km/s 的位置混合观感为平滑借力。"""
         kf = conic_peri_kf(leg)
         t_peri = kf[0] - kf[4] / kf[3]
         rp = conic_r(kf, t_peri)
+
+        def cruise_rel(t):
+            leg_ = cruise_a if t <= t_peri else cruise_b
+            pc = pos_at(planet + "/sun/orb", t)
+            pl = pos_at(leg_, t)
+            r = (pl[0] - pc[0], pl[1] - pc[1], pl[2] - pc[2])
+            dt = 600.0
+            p0, p1 = pos_at(leg_, t - dt), pos_at(leg_, t + dt)
+            c0 = pos_at(planet + "/sun/orb", t - dt)
+            c1 = pos_at(planet + "/sun/orb", t + dt)
+            v = tuple(((p1[k] - p0[k]) - (c1[k] - c0[k])) / (2.0 * dt) for k in range(3))
+            return r, v
+
+        t_in, t_out = t_peri - 86400.0, t_peri + 86400.0
+        con = None
+        for _ in range(5):
+            r_in, v_in = cruise_rel(t_in)
+            _, v_out = cruise_rel(t_out)
+            turn = ang3(v_in, v_out)
+            e = 1.0 / math.sin(math.radians(turn) / 2.0)   # 转弯角钉 e（方向测量最稳）
+            A = rp / (e - 1.0)                             # 近拱点钉腿根数任务值
+            hh = unit3(cross3(v_in, v_out))
+            psi = con["bend_at"](r_soi) if con else 0.0
+            vinf = rodrigues(unit3(v_in), hh, -psi)        # SOI 实测方向 → 渐近线方向
+            w = cross3(hh, vinf)
+            P = unit3(tuple((vinf[k] - math.sqrt(e * e - 1.0) * w[k]) / e for k in range(3)))
+            con = hyp_conic(mu, A, e, P, cross3(hh, P), t_peri)
+            t_in2 = con["radius_t"](r_soi, False)
+            t_out2 = con["radius_t"](r_soi, True)
+            done = abs(t_in2 - t_in) < 2.0 and abs(t_out2 - t_out) < 2.0
+            t_in, t_out = t_in2, t_out2
+            if done:
+                break
+        tin, tout = t_in, t_out
+
+        # 核对：入臂/出臂边界速度连续性 + 能量一致性
+        r_in, v_in = cruise_rel(tin)
+        _, v_out = cruise_rel(tout)
+        v_con_in, v_con_out = con["vel"](tin), con["vel"](tout)
+        vinf = math.sqrt(mu / con["A"])
+        print(f"  [{label}] rp={rp:,.0f} km（腿根数任务值）  转弯 {ang3(v_in, v_out):.2f}°"
+              f"（=2 asin 1/e）  v∞={vinf:.3f} km/s")
+        print(f"    切向连续：入臂 {ang3(v_con_in, v_in):.3f}°  出臂 {ang3(v_con_out, v_out):.3f}°"
+              f"   能量：双曲线 |v(SOI)|={norm3(v_con_in):.3f} vs 巡航 {norm3(v_in):.3f} km/s")
+
         r_patch = 2.5 * r_soi
-        t_p_in = conic_cross(kf, t_peri, r_patch, False)
-        t_p_out = conic_cross(kf, t_peri, r_patch, True)
-        tin = conic_cross(kf, t_peri, r_soi, False)
-        tout = conic_cross(kf, t_peri, r_soi, True)
+        t_p_in = con["radius_t"](r_patch, False)
+        t_p_out = con["radius_t"](r_patch, True)
 
         def cruise_ref(t):
             # 巡航腿是日心根数；跨越飞掠间隙的区段由前后腿各自外推
             return pos_at(cruise_a if t <= t_peri else cruise_b, t)
 
         def rebuilt(t):
-            con = orb_pos(kf, t)
+            rr = con["pos"](t)
             c = planet32(planet, t)
-            return (con[0] + c[0], con[1] + c[1], con[2] + c[2])
+            return (rr[0] + c[0], rr[1] + c[1], rr[2] + c[2])
 
         d_in = norm3(tuple(cruise_ref(t_p_in)[k] - rebuilt(t_p_in)[k] for k in range(3)))
         d_out = norm3(tuple(cruise_ref(t_p_out)[k] - rebuilt(t_p_out)[k] for k in range(3)))
@@ -968,13 +1339,53 @@ def main():
 
     v1_span = rebuild_flyby("Venus-1", "sc_cassini/venus/flyby1/orb",
                             "sc_cassini/sun/1/orb", "sc_cassini/sun/2/orb",
-                            "venus", SOI_RADII["venus"])
+                            "venus", SOI_RADII["venus"], def_mu("sc_cassini/venus/flyby1/orb"))
     v2_span = rebuild_flyby("Venus-2", "sc_cassini/venus/flyby2/orb",
                             "sc_cassini/sun/2/orb", "sc_cassini/sun/3/orb",
-                            "venus", SOI_RADII["venus"])
+                            "venus", SOI_RADII["venus"], def_mu("sc_cassini/venus/flyby2/orb"))
     ef_span = rebuild_flyby("Earth", "sc_cassini/earth/flyby/orb",
                             "sc_cassini/sun/3/orb", "sc_cassini/sun/4/orb",
-                            "earth", SOI_RADII["earth"])
+                            "earth", SOI_RADII["earth"], def_mu("sc_cassini/earth/flyby/orb"))
+
+    # ---------- 发射逃逸段重构（merged 窗口替换，同飞掠段方案） ----------
+    # dynamo launch 腿（地球中心双曲线）方向被虚构（实测相对 sun/1 推出的真实
+    # 出射方向偏 ~78–84°，与飞掠腿镜像缺陷同族），segment 由 build_launch_escape
+    # 构造的「sun/1 真实边界状态 + 腿根数 rp/t_peri」双曲线替换：
+    #   merged[t0l, t_bl] = planet32(earth) + rel_conic，密度 60s（近拱 +2h）
+    #   /300s（+12h）/600s；末端 36h 混入 sun/1 真实弧（t_b 在 SOI 外，
+    #   密切根数外推残差 ~数千 km，混合窗内平滑吸收，SOI 显示窗之外）。
+    if lbuild:
+        lcon = lbuild["con"]
+        t0l, tbl = lbuild["t0"], lbuild["tb"]
+        W_l = 36 * 3600.0
+        tp_l = lbuild["t_peri"]
+        times_l = []
+        t = t0l
+        while t <= tbl:
+            times_l.append(t)
+            dtp = t - tp_l
+            t += (60.0 if dtp < 2 * 3600.0 else
+                  (300.0 if dtp < 12 * 3600.0 else 600.0))
+        if times_l[-1] < tbl:
+            times_l.append(tbl)
+        new_pts = []
+        for t in times_l:
+            s = smoothstep((t - (tbl - W_l)) / W_l) if t > tbl - W_l else 0.0
+            e = planet32("earth", t)
+            r = lcon["pos"](t)
+            cr = (r[0] + e[0], r[1] + e[1], r[2] + e[2])
+            if s > 0.0:
+                sr = pos_at("sc_cassini/sun/1/orb", t)
+                cr = (cr[0] + (sr[0] - cr[0]) * s,
+                      cr[1] + (sr[1] - cr[1]) * s,
+                      cr[2] + (sr[2] - cr[2]) * s)
+            new_pts.append((t, f32(cr[0]), f32(cr[1]), f32(cr[2])))
+        lo = bisect.bisect_left(merged_t, t0l)
+        hi = bisect.bisect_right(merged_t, tbl)
+        merged[lo:hi] = new_pts
+        merged_t[lo:hi] = [p[0] for p in new_pts]
+        print(f"  rebuild[Launch] merged {iso(t0l)} .. {iso(tbl)} 替换 {len(new_pts)} pts"
+              f"（近拱+2h @60s / +12h @300s，末端 {W_l / 3600:.0f}h 混入 sun/1）")
 
     # 窗口边界改用【最终轨迹】的距离剖面：过渡区内巡航弧可能比双曲线更贴近
     # 行星（V1 568k / Earth 443k km，均低于 SOI 半径），若窗口只按圆锥曲线
@@ -1055,6 +1466,57 @@ def main():
     merged_t[lo:hi] = [p[0] for p in new_pts]
     print(f"  huygens separation window: {len(new_pts)} pts @5min")
 
+    # ---------- 土星 SOI 接近段重构（merged 窗口替换，同发射段方案） ----------
+    # dynamo saturn/orb 腿的入臂双曲线整体镜像（SPICE 仲裁：h 反平行
+    # 172–180°、近拱点方向一致，首键帧当日位置即差 11.9M km；rp/t_peri 为
+    # 真实任务值），由 build_saturn_approach 构造的「sun/4 真实边界状态 +
+    # 腿根数 rp/t_peri」土心入臂双曲线替换 merged[t_w0, t_w1]：
+    #   近端：交界 t0（=腿首键帧）两侧 W_in/2 内与 sun/4 真实弧平滑混合
+    #         （A 反解后边界位置残差 ~10 km，混合窗仅作平滑衔接）；
+    #   远端：t_peri+1h .. +6h 混入 saturn/orb 真实捕获弧（SOI 主发动机
+    #         点火 2004-07-01 01:12–02:48 UTC 已完成，其后腿数据真实）。
+    # 相对行星锚定语义与 rebuild_flyby 一致：日心 = rel + planet32(t)。
+    if sbuild:
+        scon = sbuild["con"]
+        t0s, tps = sbuild["t0"], sbuild["t_peri"]
+        W_in = max(6 * 3600.0, min(3 * 86400.0, sbuild["gap"] / 2.5))
+        w0s = t0s - 0.5 * W_in
+        t_bl0 = tps + 1 * 3600.0
+        w1s = tps + 6 * 3600.0
+        times_s = []
+        t = w0s
+        while t <= w1s:
+            times_s.append(t)
+            dtp = abs(t - tps)
+            t += (60.0 if dtp < 2 * 3600.0 else
+                  (300.0 if dtp < 12 * 3600.0 else
+                   (900.0 if dtp < 3 * 86400.0 else 1800.0)))
+        new_pts = []
+        for t in times_s:
+            rc = scon["pos"](t)
+            cs = planet32("saturn", t)
+            rb = (rc[0] + cs[0], rc[1] + cs[1], rc[2] + cs[2])
+            cr = pos_at("sc_cassini/sun/4/orb", t)   # 日心近端混合基准
+            s_in = smoothstep(min(1.0, max(0.0, (t - w0s) / W_in)))
+            px = cr[0] + (rb[0] - cr[0]) * s_in
+            py = cr[1] + (rb[1] - cr[1]) * s_in
+            pz = cr[2] + (rb[2] - cr[2]) * s_in
+            if t > t_bl0:
+                lp = pos_at("sc_cassini/saturn/orb", t)
+                cp = pos_at("saturn/sun/orb", t)
+                s_out = smoothstep(min(1.0, max(0.0, (t - t_bl0) / (w1s - t_bl0))))
+                px += (lp[0] + cp[0] - px) * s_out
+                py += (lp[1] + cp[1] - py) * s_out
+                pz += (lp[2] + cp[2] - pz) * s_out
+            new_pts.append((t, f32(px), f32(py), f32(pz)))
+        lo = bisect.bisect_left(merged_t, w0s)
+        hi = bisect.bisect_right(merged_t, w1s)
+        merged[lo:hi] = new_pts
+        merged_t[lo:hi] = [p[0] for p in new_pts]
+        print(f"  rebuild[Saturn-approach] merged {iso(w0s)} .. {iso(w1s)} 替换 "
+              f"{len(new_pts)} pts（近拱 ±2h @60s；近端混合窗 {W_in / 3600:.1f}h，"
+              f"t_peri+1h..+6h 混入捕获弧）")
+
     # ---------- 卫星近掠加密（二级 SOI / 近掠几何，item 3/5/6） ----------
     # 土星段 2h 基础采样在卫星近掠处完全失真（Enceladus E-21 真实 49 km 被采成
     # ~1,500 km）：dynamo 的 saturn/orb 腿在近掠附近自带 ~16 min 密度的根数
@@ -1071,6 +1533,10 @@ def main():
         "mimas": (1.2e5, 1e5), "moon": (2e5, 1.5e5),
     }
     ts0, ts1 = legs["sc_cassini/saturn/orb"]
+    # 接近段重构窗口 [t0, t_peri+6h] 内 saturn/orb 腿为镜像假数据：
+    # 卫星近掠扫描从重构结束之后开始（其后腿数据真实）
+    if sbuild:
+        ts0 = max(ts0, sbuild["t_peri"] + 6 * 3600.0)
 
     def leg_sat_rel(t):
         return pos_at("sc_cassini/saturn/orb", t)
@@ -1342,14 +1808,17 @@ def main():
     #   分离 → 进入，转移周期 31.9 天与真实 C 轨道一致）→ rel_saturn 行；
     # 进入段：sc_huygens/titan/orb（Titan 中心真实进入双曲线，近地点在
     #   Titan 内部——真空轨道被大气在 ~1,270 km 进入界面截断的物理形态）
-    #   → rel_titan 行；减速伞下降段：由进入段末端切向连续的贝塞尔弧接至
-    #   着陆点（进入点径向投影到 Titan 表面）。
+    #   → rel_titan 行（纯 Titan 相对坐标：ENTRY 前取真实腿差 coast−titan，
+    #   ENTRY 后取圆锥曲线 + Titan 系锚定 δ_t，详见下方拼接注释）；
+    # 减速伞下降段：由进入段末端切向连续的贝塞尔弧接至着陆点（真实进入点
+    #   方向径向投影到 Titan 表面）。
     # 时间基准（NASA science.nasa.gov Huygens Probe）：进入 09:06 UTC、下降
     #   2h27m（着陆 ~11:30 UTC）、着陆后表面工作 72 分钟后失联。
     SEP_ET_H = et(2004, 12, 25, 2, 0)
     ENTRY_ET_H = et(2005, 1, 14, 9, 6)
     DESCENT_S_H = 2 * 3600 + 27 * 60
     TD_ET_H = ENTRY_ET_H + DESCENT_S_H
+    MU_TITAN = def_mu("sc_huygens/titan/orb")   # 8978.139 km³/s²（def.dyn 头）
     huy = {"sepEt": SEP_ET_H, "entryEt": ENTRY_ET_H, "tdEt": TD_ET_H,
            "losEt": TD_ET_H + 72 * 60}
     co = []
@@ -1362,48 +1831,102 @@ def main():
         p = pos_at("sc_huygens/saturn/orb", ENTRY_ET_H)
         co.append((ENTRY_ET_H, f32(p[0]), f32(p[1]), f32(p[2])))
 
-    # Titan 进入段：取最接近 ENTRY−600s 的根数关键帧做纯两体外推（干净双曲线）
+    # Titan 进入段：dynamo 进入腿圆锥曲线相对真实接近方向整体镜像（h 与巡航
+    # 接近方向反平行 179.9°，与飞掠腿同源），改用「真实近拱根数 + 巡航远场
+    # 渐近线」构造：
+    #   A/e/t_peri 取最接近进入界面的腿关键帧（真实：真空近掠 1445 km，进入
+    #   界面 3845 km 穿越时刻与 09:06 UTC 实录一致）；
+    #   ĥ/v̂∞ 取巡航腿（sc_huygens/saturn/orb，土星中心真实根数）在 Titan 远场
+    #   （−48h，Titan SOI 外 ~22×，Titan 引力可忽略）的角动量/速度方向。
     huy_kfs = load_points("sc_huygens/titan/orb")["points"]
     kf_t = min(huy_kfs, key=lambda p: abs(p[0] - (ENTRY_ET_H - 600.0)))
+    A_t = abs(kf_t[1])            # dynamo 双曲线腿存 |a|（正值）
+    e_t = kf_t[2]
+    sq_t = math.sqrt(e_t * e_t - 1.0)
+    t_peri_t = kf_t[0] - kf_t[4] / kf_t[3]
+    n_t = math.sqrt(MU_TITAN / (A_t ** 3))
+    t_far = ENTRY_ET_H - 48 * 3600.0
+
+    def titan_rel(t):
+        tp = pos_at("titan/saturn/orb", t)
+        hp = pos_at("sc_huygens/saturn/orb", t)
+        return (hp[0] - tp[0], hp[1] - tp[1], hp[2] - tp[2])
+
+    r_far = titan_rel(t_far)
+    dtv = 1800.0
+    v_far = tuple((titan_rel(t_far + dtv)[k] - titan_rel(t_far - dtv)[k]) / (2.0 * dtv)
+                  for k in range(3))
+    hh_t = unit3(cross3(r_far, v_far))
+    vinf_t = unit3(v_far)
+    w_t = cross3(hh_t, vinf_t)
+    P_t = unit3(tuple((vinf_t[k] - sq_t * w_t[k]) / e_t for k in range(3)))
+    Q_t = cross3(hh_t, P_t)
 
     def titan_entry_rel(t):
-        return orb_pos(kf_t, t)
+        H = solve_hyp(n_t * (t - t_peri_t), e_t)
+        x = A_t * (e_t - math.cosh(H))
+        y = A_t * sq_t * math.sinh(H)
+        return (x * P_t[0] + y * Q_t[0], x * P_t[1] + y * Q_t[1], x * P_t[2] + y * Q_t[2])
+
+    # 接近方向核对：−1h 处进入弧 vs 巡航弧的位置方向夹角（真实轨迹在该处已被
+    # Titan 弯曲 ~4°；镜像 Bug 时为 ~154°）
+    t_chk = ENTRY_ET_H - 3600.0
+    print(f"  titan entry conic: rp={A_t * (e_t - 1.0):,.0f} km e={e_t:.3f} "
+          f"t_peri={iso(t_peri_t)}  −1h 进入弧 vs 巡航弧方向夹角 "
+          f"{ang3(titan_entry_rel(t_chk), titan_rel(t_chk)):.1f}°（物理弯曲 ~4°）")
 
     R_TITAN_H = RADII["titan"]
-    p_entry = titan_entry_rel(ENTRY_ET_H)
+
+    # relTit 行 = 纯 Titan 中心相对坐标（前端直接锚定 Titan 实时位置，着陆点必须
+    # 精确落在 r=R_TITAN 上）。拼接修复（惠更斯模型 bug）：
+    #   ENTRY−1h..ENTRY：真实腿差 coast(t) − titan(t)（与巡航段/一级线天然连续）；
+    #   ENTRY..T_AERO：进入圆锥曲线 + δ_t（Titan 系锚定 δ_t = 真实进入点 − 圆锥
+    #   进入点，保证 ENTRY 处严格连续；不再把土星系拼接差混入 Titan 相对坐标，
+    #   旧做法会使进入/下降段相对 Titan 整体偏移 ~|δ|，探测器落不到表面）。
+    def coast_titan_rel(t):
+        tp = moon_cr("titan", t)
+        hp = pos_at("sc_huygens/saturn/orb", t)
+        return tuple(hp[k] - tp[k] for k in range(3))
+
+    p_entry = coast_titan_rel(ENTRY_ET_H)          # 真实进入点（Titan 相对）
+    p_entry_conic = titan_entry_rel(ENTRY_ET_H)    # 圆锥曲线进入点
     r_entry = norm3(p_entry)
+    d_tit = tuple(p_entry[k] - p_entry_conic[k] for k in range(3))
     print(f"  huygens entry: |rel(titan)| = {r_entry:,.0f} km"
-          f"（R+1270 = {R_TITAN_H + 1270:,.0f}）")
-    # 真空双曲线下潜到 ~160 km 高度处截断（此后大气/降落伞接管）
+          f"（R+1270 = {R_TITAN_H + 1270:,.0f}，conic {norm3(p_entry_conic):,.0f}）")
+    print(f"  huygens coast↔entry 拼接差 |δ_t| = {norm3(d_tit):,.0f} km"
+          f"（Titan 系锚定，仅作用于 ENTRY 之后的圆锥弧）")
+
+    def titan_entry_anchored(t):
+        p = titan_entry_rel(t)
+        return (p[0] + d_tit[0], p[1] + d_tit[1], p[2] + d_tit[2])
+
+    # 真空双曲线下潜到 ~160 km 高度处截断（此后大气/降落伞接管；按锚定后弧判定）
     T_AERO = ENTRY_ET_H
     for _i in range(240):
         _t = ENTRY_ET_H + _i * 10.0
-        if norm3(titan_entry_rel(_t)) < R_TITAN_H + 160.0:
+        if norm3(titan_entry_anchored(_t)) < R_TITAN_H + 160.0:
             T_AERO = _t
             break
 
-    # 巡航段(Titan-rel 参考) 与 进入段 的拼接差：δ = coast(ENTRY) − (titan本地 + entryRel)
-    # （两者都是土星中心系：coast 行与 titan 本地+进入双曲线同框）。将 Titan-rel
-    # 行整体平移 δ 使 ENTRY 处严格连续（保留真实弧形，仅重锚定消除拟合差）。
-    tit_e = moon_cr("titan", ENTRY_ET_H)
-    coast_end = (co[-1][1], co[-1][2], co[-1][3])
-    delta = tuple(coast_end[k] - (tit_e[k] + p_entry[k]) for k in range(3))
-    print(f"  huygens coast↔entry 拼接差 |δ| = {norm3(delta):,.0f} km（重锚定消除）")
-
     ti_rows = []
     t = ENTRY_ET_H - 3600.0
+    while t < ENTRY_ET_H:
+        p = coast_titan_rel(t)
+        ti_rows.append((t, f32(p[0]), f32(p[1]), f32(p[2])))
+        t += 30.0
     while t <= T_AERO:
-        p = titan_entry_rel(t)
-        ti_rows.append((t, f32(p[0] + delta[0]), f32(p[1] + delta[1]), f32(p[2] + delta[2])))
+        p = titan_entry_anchored(t)
+        ti_rows.append((t, f32(p[0]), f32(p[1]), f32(p[2])))
         t += 30.0
     if ti_rows[-1][0] < T_AERO:
-        p = titan_entry_rel(T_AERO)
-        ti_rows.append((T_AERO, f32(p[0] + delta[0]), f32(p[1] + delta[1]), f32(p[2] + delta[2])))
+        p = titan_entry_anchored(T_AERO)
+        ti_rows.append((T_AERO, f32(p[0]), f32(p[1]), f32(p[2])))
 
-    # 下降段贝塞尔：S = 气动截断点（切向连续），E = 进入点径向投影到表面，
+    # 下降段贝塞尔：S = 气动截断点（切向连续），E = 真实进入点方向径向投影到表面，
     # C = S + 切向×0.45×drop + 侧向×0.12×drop（风漂移），ease-out 先快后慢。
     S3 = (ti_rows[-1][1], ti_rows[-1][2], ti_rows[-1][3])
-    E3 = tuple((p_entry[k] + delta[k]) / (norm3(p_entry) + 1e-9) * R_TITAN_H for k in range(3))
+    E3 = tuple(p_entry[k] / (r_entry + 1e-9) * R_TITAN_H for k in range(3))
 
     def V_norm3(v):
         n = norm3(v) or 1.0
@@ -1412,7 +1935,7 @@ def main():
     def V_cross3(a, b):
         return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
 
-    tan3 = V_norm3(tuple(S3[k] - (titan_entry_rel(T_AERO - 60.0)[k] + delta[k]) for k in range(3)))
+    tan3 = V_norm3(tuple(S3[k] - titan_entry_anchored(T_AERO - 60.0)[k] for k in range(3)))
     side3 = V_norm3(V_cross3(tan3, (0.0, 1.0, 0.0)))
     drop = norm3(tuple(S3[k] - E3[k] for k in range(3)))
     C3 = tuple(S3[k] + tan3[k] * 0.45 * drop + side3[k] * 0.12 * drop for k in range(3))

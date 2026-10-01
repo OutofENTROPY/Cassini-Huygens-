@@ -71,6 +71,7 @@
   });
   document.getElementById('event-panel-head').addEventListener('click', () => {
     eventPanel.classList.toggle('collapsed');
+    if (!eventPanel.classList.contains('collapsed') && mqMobile.matches) setHudOpen(false);
   });
   tl.addEventMarks(EVENTS, pickEvent);
 
@@ -87,6 +88,7 @@
       viewBtns.forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       const v = btn.dataset.view;
+      setInfoBody(null);   // 切换视角时收起星体状态卡（跟随 Cassini / 全局视角均不再指向某行星）
       if (v === 'follow') {
         cam.setMode('follow');
         cam.flyTo('cassini', { dist: Math.max(cam.currentDist(), 3e5) });
@@ -102,6 +104,37 @@
   document.getElementById('btn-help').addEventListener('click', () => helpModal.classList.remove('hidden'));
   document.getElementById('help-close').addEventListener('click', () => helpModal.classList.add('hidden'));
   helpModal.addEventListener('click', (e) => { if (e.target === helpModal) helpModal.classList.add('hidden'); });
+
+  // 全屏显示按钮（⛶）
+  const fsBtn = document.getElementById('btn-fullscreen');
+  function syncFullscreenBtn() {
+    const fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    fsBtn.classList.toggle('active', fs);
+    fsBtn.title = fs ? '退出全屏' : '全屏显示';
+  }
+  fsBtn.addEventListener('click', () => {
+    const root = document.documentElement;
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      const req = root.requestFullscreen || root.webkitRequestFullscreen;
+      if (req) Promise.resolve(req.call(root)).catch(() => {});   // 拒绝全屏时静默（iframe / 无手势）
+    } else {
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) exit.call(document);
+    }
+  });
+  document.addEventListener('fullscreenchange', syncFullscreenBtn);
+  document.addEventListener('webkitfullscreenchange', syncFullscreenBtn);
+
+  // 移动端：状态卡片（HUD / 星体状态）折叠在左上角 ◉ 弹出按钮上；
+  // 与任务事件面板互斥展开，避免小屏上互相遮挡
+  const hudToggle = document.getElementById('hud-toggle');
+  const mqMobile = window.matchMedia('(max-width: 900px)');
+  function setHudOpen(open) {
+    document.body.classList.toggle('hud-open', open);
+    hudToggle.classList.toggle('active', open);
+    if (open && mqMobile.matches) eventPanel.classList.add('collapsed');
+  }
+  hudToggle.addEventListener('click', () => setHudOpen(!document.body.classList.contains('hud-open')));
 
   // 真实光照开关（阴影处完全不反光）
   const lightBtn = document.getElementById('lighting-btn');
@@ -220,6 +253,9 @@
       biRows.appendChild(biSpinRow);
     }
     bodyInfo.classList.remove('hidden');
+    // 移动端：状态卡片折叠时，点击星体自动展开 ◉ 弹出按钮
+    document.body.classList.add('hud-open');
+    hudToggle.classList.add('active');
   }
 
   // 任务阶段（专业术语）
@@ -274,14 +310,16 @@
     cam.flyTo(name, { dist: b.radius * 6 });
   }
 
+  /* 点击事件卡 / 时间轴节点：跳转时刻并聚焦 Cassini 本体（不聚焦行星，
+     事件天体仅作为镜头距离 zoom 的参考），同时收起星体状态卡 */
   function pickEvent(ev) {
     tl.setNow(ev.et);
     tl.setPlaying(false);
     tl.refresh();
     showEventCard(ev);
     const dist = ev.zoom || (scene.registry.get(ev.body) ? scene.registry.get(ev.body).radius * 8 : 1e6);
-    if (ev.body === 'cassini') setInfoBody(null); else setInfoBody(ev.body);
-    cam.flyTo(ev.body, { dist });
+    setInfoBody(null);
+    cam.flyTo('cassini', { dist });
     highlightEvent(ev);
   }
 
@@ -422,8 +460,8 @@
     tl.setNow(evHash.et);
     tl.refresh();
     const dist0 = evHash.zoom || (scene.registry.get(evHash.body) ? scene.registry.get(evHash.body).radius * 8 : 1e6);
-    cam.focus(evHash.body, { dist: dist0, theta: 0.9, phi: 1.05, animate: false });
-    setInfoBody(evHash.body === 'cassini' ? null : evHash.body);
+    cam.focus('cassini', { dist: dist0, theta: 0.9, phi: 1.05, animate: false });
+    setInfoBody(null);
     setTimeout(() => pickEvent(evHash), 400);
   } else if (dateM) {
     const tt = Date.parse(dateM[1] + 'T' + (dateM[2] || '00') + ':' + (dateM[3] || '00') + ':00Z');
