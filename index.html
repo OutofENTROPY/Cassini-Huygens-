@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Cassini–Huygens 历史飞行数据 · 3D 轨迹可视化 (1997–2017)</title>
-<link rel="stylesheet" href="css/style.css?v=2026204">
+<link rel="stylesheet" href="css/style.css?v=2026208">
 </head>
 <body>
 <div id="app">
@@ -64,14 +64,20 @@
     </div>
   </div>
 
-  <!-- 状态 HUD（移动端折叠进左上角 ◉ 弹出按钮） -->
+  <!-- 状态 HUD（左上角 ◉ 折叠按钮：桌面默认展开，移动端默认收起） -->
   <div id="hud-stack">
     <button id="hud-toggle" title="状态信息" aria-label="显示/隐藏状态信息">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>
     </button>
+    <!-- 任务事件卡收纳按钮：移动端在 ◉ 下方（呼吸闪烁），桌面折叠后出现在事件卡原位 -->
+    <button id="event-fab" title="任务事件卡" aria-label="展开/收起任务事件卡">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <span>任务事件</span>
+    </button>
     <div id="hud">
       <div id="hud-date">1997-10-15 08:43 UTC</div>
       <div id="hud-phase">发射 · 地球逃逸</div>
+      <div id="hud-att">—</div>
       <div id="hud-dist">—</div>
       <div id="hud-vel">—</div>
     </div>
@@ -85,8 +91,8 @@
 
   <!-- 事件信息卡 -->
   <div id="event-card" class="hidden">
-    <button id="event-close" aria-label="关闭事件卡">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    <button id="event-fold" aria-label="收起事件卡" title="收起（可从按钮再次展开）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
     </button>
     <div id="event-date"></div>
     <h2 id="event-title"></h2>
@@ -107,20 +113,33 @@
   <!-- 帮助 -->
   <div id="help-modal" class="hidden">
     <div id="help-box">
-      <h2>操作说明</h2>
-      <ul>
+      <h2><span class="ht-d">操作说明</span><span class="ht-m">移动端操作说明</span></h2>
+      <ul id="help-list-d">
         <li><b>左键拖动</b> — 旋转视角</li>
         <li><b>滚轮</b> — 缩放</li>
         <li><b>右键拖动</b> — 平移视野中心</li>
         <li><b>点击行星 / 卫星标签</b> — 平滑过渡聚焦该天体</li>
         <li><b>点击时间轴圆点 / 事件列表</b> — 跳转事件并聚焦 Cassini</li>
+        <li><b>事件卡右上角 ⌄</b> — 收起事件卡（左下角「任务事件」按钮可再次展开）</li>
         <li><b>时间条拖动</b> — 任意时刻回放（条左半为倒退半程，右半为快进半程）</li>
         <li><b>空格</b> — 播放 / 暂停</li>
         <li><b>时间条上方速率滑块</b> — 时间流速（中点保持，左=倒放，右=正放）</li>
+        <li><b>左上角 ◉</b> — 展开 / 收起日期、阶段与距离速度状态卡</li>
         <li><b>右上角 ⛶</b> — 全屏显示 / 退出全屏</li>
         <li><b>右上角 ⚙ 设置</b> — 全局视角、真实光照、行星 / Cassini 轨迹开关、未来轨迹显隐、近期/全部历史轨迹切换</li>
       </ul>
-      <p>行星尺寸与轨道距离均为真实比例；Cassini 进入行星引力影响球（Venus / Earth / Jupiter / Saturn）时，自动叠加显示相对该行星的轨迹，两条轨迹的交点即 Cassini 实际位置，日心轨迹同步降低亮度；在土星系统内进一步接近卫星（Titan / Enceladus / Rhea / Dione / Iapetus 等）时，日心与土星相对轨迹再降亮度并淡入相对卫星的二级轨迹；离开影响球后自动淡出恢复。点击 Huygens 标签或事件卡可跟随惠更斯探测器（2005-01-14 着陆 Titan、失联后自动移除实体）。飞船模型为真实尺寸（缩小视角时随之缩至真实大小），高增益天线按任务实际姿态实时指向 Earth。</p>
+      <ul id="help-list-m">
+        <li><b>单指拖动</b> — 旋转视角</li>
+        <li><b>双指捏合</b> — 缩放视角</li>
+        <li><b>点击行星 / 卫星标签</b> — 平滑过渡聚焦该天体</li>
+        <li><b>点击时间轴圆点 / 事件列表</b> — 跳转事件并聚焦 Cassini</li>
+        <li><b>时间条拖动</b> — 任意时刻回放（条左半为倒退半程，右半为快进半程）</li>
+        <li><b>时间条上方速率滑块</b> — 时间流速（中点保持，左=倒放，右=正放）</li>
+        <li><b>左上角 ◉</b> — 展开 / 收起日期、阶段与距离速度状态卡</li>
+        <li><b>左上角铃铛（呼吸闪烁）</b> — 点开任务事件后详情卡收纳于此，点按展开 / 收起</li>
+        <li><b>右上角 ⛶ / ⚙</b> — 全屏显示；全局视角、真实光照、行星 / Cassini 轨迹开关等设置</li>
+      </ul>
+      <p>行星尺寸与轨道距离均为真实比例；Cassini 进入行星引力影响球（Venus / Earth / Jupiter / Saturn）时，自动叠加显示相对该行星的轨迹，两条轨迹的交点即 Cassini 实际位置，日心轨迹同步降低亮度；在土星系统内进一步接近卫星（Titan / Enceladus / Rhea / Dione / Iapetus 等）时，日心与土星相对轨迹再降亮度并淡入相对卫星的二级轨迹；离开影响球后自动淡出恢复。点击 Huygens 标签或事件卡可跟随惠更斯探测器（2005-01-14 着陆 Titan、失联后自动移除实体）。飞船模型为真实尺寸（缩小视角时随之缩至真实大小），高增益天线按 NASA 任务记录的真实姿态状态实时定向：默认对地通信，土星轨道切入（SOI）与 Grand Finale 环缝穿越期间转为前向防尘盾（&quot;HGA to RAM&quot;），惠更斯下降期间指向 Titan 中继，终段再入保持对地直至烧毁。</p>
       <p id="help-github">源代码已开源在 GitHub：<a href="https://github.com/OutofENTROPY" target="_blank" rel="noopener">@OutofENTROPY</a></p>
       <button id="help-close">开始探索</button>
     </div>
@@ -153,26 +172,33 @@
   </div>
 
   <div id="loading">
-    <div class="load-ring"></div>
-    <div id="loading-text">正在加载真实历表数据…</div>
+    <!-- miuix 转圈：圆头弧段绕环旋转。旋转由外层 div 承载（独立合成层动画，
+         启动期主线程被大体积数据脚本占满时仍流畅转动），svg 只负责绘制 -->
+    <div class="load-ring" aria-hidden="true">
+      <svg viewBox="0 0 50 50">
+        <circle cx="25" cy="25" r="20" fill="none" stroke="rgba(92,157,255,.14)" stroke-width="3.5"/>
+        <circle cx="25" cy="25" r="20" fill="none" stroke="#5c9dff" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="34 92"/>
+      </svg>
+    </div>
+    <div id="loading-text">LOADING</div>
   </div>
 </div>
 
 <script src="lib/three.min.js?v=2026094"></script>
 <script src="lib/GLTFLoader.js?v=2026103"></script>
 <script src="lib/DRACOLoader.js?v=2026103"></script>
-<script src="data/textures.js?v=2026121"></script>
+<script src="data/textures.js?v=2026122"></script>
 <script src="data/stars.js?v=2026094"></script>
-<script src="data/cassini_data.js?v=2026202"></script>
-<script src="data/moons_data.js?v=2026202"></script>
+<script src="data/cassini_data.js?v=2026203"></script>
+<script src="data/moons_data.js?v=2026203"></script>
 <script src="data/models.js?v=2026103"></script>
 <script src="js/events.js?v=2026201"></script>
-<script src="js/textures.js?v=2026102"></script>
+<script src="js/textures.js?v=2026103"></script>
 <script src="js/huygens.js?v=2026201"></script>
-<script src="js/cassini_model.js?v=2026103"></script>
-<script src="js/scene.js?v=2026205"></script>
-<script src="js/camera.js?v=2026112"></script>
+<script src="js/cassini_model.js?v=2026214"></script>
+<script src="js/scene.js?v=2026219"></script>
+<script src="js/camera.js?v=2026114"></script>
 <script src="js/timeline.js?v=2026124"></script>
-<script src="js/main.js?v=2026203"></script>
+<script src="js/main.js?v=2026208"></script>
 </body>
 </html>

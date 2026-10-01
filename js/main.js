@@ -71,14 +71,21 @@
   });
   document.getElementById('event-panel-head').addEventListener('click', () => {
     eventPanel.classList.toggle('collapsed');
-    if (!eventPanel.classList.contains('collapsed') && mqMobile.matches) setHudOpen(false);
+    if (!eventPanel.classList.contains('collapsed')) {
+      if (mqMobile.matches) setHudOpen(false);
+      scrollToCurrentEvent();
+    }
   });
   tl.addEventMarks(EVENTS, pickEvent);
 
-  // 事件卡
+  // 事件卡：仅可收起（⌄，折入收纳按钮，可再次展开）
+  // 桌面默认展开，移动端默认收进左上角按钮（呼吸闪烁提示）
   const eventCard = document.getElementById('event-card');
-  document.getElementById('event-close').addEventListener('click', () => {
-    eventCard.classList.add('hidden');
+  document.getElementById('event-fold').addEventListener('click', () => {
+    document.body.classList.add('event-folded');
+  });
+  document.getElementById('event-fab').addEventListener('click', () => {
+    document.body.classList.remove('event-folded');
   });
 
   // 视图按钮（仅视角切换；真实光照是独立开关，不触发镜头移动）
@@ -125,8 +132,8 @@
   document.addEventListener('fullscreenchange', syncFullscreenBtn);
   document.addEventListener('webkitfullscreenchange', syncFullscreenBtn);
 
-  // 移动端：状态卡片（HUD / 星体状态）折叠在左上角 ◉ 弹出按钮上；
-  // 与任务事件面板互斥展开，避免小屏上互相遮挡
+  // 状态卡片（HUD / 星体状态）折叠在左上角 ◉ 按钮：桌面默认展开，移动端默认收起；
+  // 移动端展开状态卡时与任务事件面板互斥，避免小屏上互相遮挡
   const hudToggle = document.getElementById('hud-toggle');
   const mqMobile = window.matchMedia('(max-width: 900px)');
   function setHudOpen(open) {
@@ -135,6 +142,11 @@
     if (open && mqMobile.matches) eventPanel.classList.add('collapsed');
   }
   hudToggle.addEventListener('click', () => setHudOpen(!document.body.classList.contains('hud-open')));
+  // 初始与断点跨越（拖拽窗口 / 旋转屏幕跨 900px）时按当前端默认切换：桌面展开、移动端收起
+  function applyHudDefault() { setHudOpen(!mqMobile.matches); }
+  applyHudDefault();
+  if (mqMobile.addEventListener) mqMobile.addEventListener('change', applyHudDefault);
+  else if (mqMobile.addListener) mqMobile.addListener(applyHudDefault);
 
   // 真实光照开关（阴影处完全不反光）
   const lightBtn = document.getElementById('lighting-btn');
@@ -209,6 +221,7 @@
   // HUD
   const hudDate = document.getElementById('hud-date');
   const hudPhase = document.getElementById('hud-phase');
+  const hudAtt = document.getElementById('hud-att');
   const hudDist = document.getElementById('hud-dist');
   const hudVel = document.getElementById('hud-vel');
 
@@ -253,7 +266,7 @@
       biRows.appendChild(biSpinRow);
     }
     bodyInfo.classList.remove('hidden');
-    // 移动端：状态卡片折叠时，点击星体自动展开 ◉ 弹出按钮
+    // 状态卡片折叠时，点击星体自动展开 ◉ 按钮下的状态卡
     document.body.classList.add('hud-open');
     hudToggle.classList.add('active');
   }
@@ -321,6 +334,7 @@
     setInfoBody(null);
     cam.flyTo('cassini', { dist });
     highlightEvent(ev);
+    scrollToCurrentEvent();
   }
 
   function showEventCard(ev) {
@@ -328,6 +342,16 @@
     document.getElementById('event-title').textContent = ev.title;
     document.getElementById('event-text').textContent = ev.text;
     eventCard.classList.remove('hidden');
+    document.body.classList.add('event-open');
+    // 每次点开任务事件：移动端默认收进左上角按钮，桌面默认展开
+    document.body.classList.toggle('event-folded', mqMobile.matches);
+  }
+
+  /* 展开事件列表 / 跳转事件时，让列表滚动定位到当前事件（即时定位，展开即到位） */
+  function scrollToCurrentEvent() {
+    if (eventPanel.classList.contains('collapsed')) return;
+    const cur = eventList.querySelector('.ev-item.current');
+    if (cur) cur.scrollIntoView({ block: 'center', behavior: 'auto' });
   }
 
   function highlightEvent(ev) {
@@ -385,6 +409,8 @@
       const ds = fmtDate(t);
       hudDate.textContent = ds;
       hudPhase.textContent = phaseAt(t);
+      // Cassini 真实姿态状态（item 6：对地通信 / SOI 与环缝穿越防尘盾 / 惠更斯中继）
+      hudAtt.textContent = '姿态 ' + (scene.attitudeState || '—');
       // 距离信息
       const sun = reg2.get('sun');
       const dSun = Math.hypot(cassWorld[0] - sun.world[0], cassWorld[1] - sun.world[1], cassWorld[2] - sun.world[2]);
