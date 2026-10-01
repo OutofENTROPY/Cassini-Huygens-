@@ -6,6 +6,25 @@ import base64, json, os
 HERE = os.path.dirname(os.path.abspath(__file__))
 T = os.path.join(HERE, "..", "textures")
 
+
+def prep_iapetus():
+    """NASA Cassini ISS 全球镶嵌（灰度）→ 暗区（Cassini Regio）着暖棕。
+    真实暗区为棕色有机质（反照率 ~0.05），亮区冰白；镶嵌图本身为灰度，
+    按亮度加权乘暖色乘子还原 NASA Eyes 风格色彩。"""
+    from PIL import Image
+    import numpy as np
+    src = os.path.join(HERE, "..", "data_raw", "nasa_textures", "Iapetus.jpg")
+    dst = os.path.join(T, "iapetus_cassini_mosaic.jpg")
+    im = Image.open(src).convert("RGB")
+    a = np.asarray(im, dtype=np.float32) / 255.0
+    lum = a.mean(axis=2, keepdims=True)
+    t = np.clip((0.62 - lum) / 0.62, 0, 1) ** 1.2          # 暗区权重（亮区 0）
+    warm = np.array([1.10, 0.90, 0.66], dtype=np.float32)  # 暖棕乘子
+    mul = 1.0 + (warm - 1.0) * t * 0.9
+    Image.fromarray((np.clip(a * mul, 0, 1) * 255).astype(np.uint8)).save(dst, quality=90)
+    return os.path.basename(dst)
+
+
 FILES = {
     "sun": "2k_sun.jpg",
     "mercury": "2k_mercury.jpg",
@@ -20,6 +39,8 @@ FILES = {
     "uranus": "2k_uranus.jpg",
     "neptune": "2k_neptune.jpg",
     "ring": "2k_saturn_ring_alpha.png",
+    # Iapetus：NASA Cassini ISS 真实镶嵌（替换程序化贴图；暗区经度对齐见 js/scene.js）
+    "iapetus": prep_iapetus(),
 }
 
 def main():

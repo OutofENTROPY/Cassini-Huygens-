@@ -850,12 +850,16 @@ def main():
     # 旧 12h 网格 + 线性插值对 Mimas 的位置误差高达 ~20 万 km（低于奈奎斯特频率，
     # 视觉上沿弦穿过轨道——"Mimas 轨迹错误"的根源），现由细网格 + CR 插值修复。
     # 卫星数据拆分输出到 data/moons_data.js（控制单文件体积）。
+    # 时间域覆盖整个任务（1997-06 起）：此前只烘 2004 起，卡西尼到达前
+    # （1997–2004）卫星位置钳制在首帧、密切根数外推的轨道线修正量 Δ 随时间
+    # 线性放大——卫星冻结不动、轨道线远飘，即"到达前卫星轨道错乱"。
+    # dynamo 卫星腿原始数据自 1995-12 起可用，直接扩展时间域即可。
     MOON_STEPS = {"titan": day / 4, "moon": day / 4, "enceladus": 7200.0,
                   "mimas": 5400.0, "tethys": 9600.0, "dione": 13500.0,
                   "rhea": 20500.0, "iapetus": day / 2}
     moons_bodies = {}
     moons_raw = {}   # name -> (t0, step, f32 pts)：供烘焙端 moon_cr 复刻运行时插值
-    t0m, t1m = et(2004, 1, 1), et(2017, 12, 31)
+    t0m, t1m = t0p, et(2017, 12, 31)
     for m in MOONS:
         name = m.split("/")[0]
         step = MOON_STEPS.get(name, day / 2)
@@ -1633,6 +1637,35 @@ def main():
                   f"{len(wins_m)} SOI crossings")
 
 
+    # ---------- 任务终段延伸（item 5） ----------
+    # dynamo saturn/orb 腿止于 2017-09-15 10:34 ET（= 坠入事件的航天器时；
+    # NASA 公布的 11:55 UTC 信号消失为地面接收时刻，减 ~83 min 光行时即此），
+    # 但基础网格末端整数步长点落在 ~10:01（r≈11 万 km）——轨迹停在土星上空
+    # 4 万公里、从未到达行星，即"最终坠入土星的轨迹错误"。腿最后根数关键帧
+    # （r=61,174 km）的圆锥曲线在 pos_at 对 t>=末帧时自动外推，把轨迹延到
+    # 土星大气界面（r ≤ 60,050 km，1-bar + ~1,800 km，接近真实进入高度）。
+    R_ENTRY_SAT = 60050.0
+    t_ext0 = merged_t[-1]
+    t_ext_max = legs["sc_cassini/saturn/orb"][1] + 2 * 3600.0
+    ext_pts = []
+    t = t_ext0
+    while True:
+        lp = pos_at("sc_cassini/saturn/orb", t)
+        cp = pos_at("saturn/sun/orb", t)
+        r = math.sqrt(lp[0] * lp[0] + lp[1] * lp[1] + lp[2] * lp[2])
+        ext_pts.append((t,) + tuple(f32(lp[k] + cp[k]) for k in range(3)))
+        if r <= R_ENTRY_SAT:
+            break
+        t_next = min(t + (60.0 if r < 7.0e4 else 300.0), t_ext_max)
+        if t_next <= t:
+            break
+        t = t_next
+    if len(ext_pts) > 1 and ext_pts[-1][0] > t_ext0 + 1.0:
+        merged.extend(ext_pts[1:])
+        merged_t.extend(p[0] for p in ext_pts[1:])
+        print(f"  final plunge extended: +{len(ext_pts) - 1} pts, "
+              f"{iso(t_ext0)} -> {iso(merged_t[-1])} (atmosphere interface)")
+
     tt = [p[0] for p in merged]
     flat = [v for p in merged for v in p[1:]]
     cassini["trailT"] = base64.b64encode(struct.pack(f"<{len(tt)}d", *tt)).decode("ascii")
@@ -1641,34 +1674,71 @@ def main():
     print(f"cassini merged trail: {len(merged)} pts")
 
     # ---------- SOI（引力影响球）内相对行星的轨迹 ----------
-    # rel(t) = merged32(t) − planet32(t)：减去与前端 makeTrack 逐位一致的
-    # f32 运行时行星位置，前端把相对轨迹锚定在行星模型位置后
-    # anchor + rel ≡ 日心轨迹顶点（f64 精度），"相对轨迹 ∩ 日心轨迹 =
-    # Cassini 实际位置"零偏差成立。
-    # 窗口时间域 = Cassini 位于真实 SOI 半径内的时间区间（±45 min 余量，
-    # 前端按距离的淡入/淡出在窗口内完成，不会突然出现/消失）。
+    # 窗口 = Cassini 位于真实 SOI 半径内的时间区间（±45 min 余量）。
+    # 窗口几何 = merged 主轨迹顶点的子区间：rel(t) = merged32(t) − planet32(t)
+    # 由烘焙端保证，前端直接取主轨迹顶点渲染即得相对轨迹（免除旧版 f32 相对
+    # 坐标在土星距离下 ~60 m 的量化偏差，且两轨迹交点恒精确重合）。
+    # 因此数据只需窗口时间域端点 {a, b}（merged 点域），无需重复存顶点。
     #   venus  ×2：飞掠重构窗口（近拱点根数外推的双曲线）
     #   earth  ×2：1997 发射逃逸段（发射即在 SOI 内）+ 1999 回掠重构窗口
-    #   jupiter   ：日心弧本身即真实借力路径，rel = merged − planet
-    #   saturn    ：进入 SOI（接近段）起至任务结束（环绕段全程位于 SOI 内）
-    def pack_soi_rows(rows):
-        tt = [r[0] for r in rows]
-        flat = [v for r in rows for v in r[1:]]
-        return {
-            "t": base64.b64encode(struct.pack(f"<{len(tt)}d", *tt)).decode("ascii"),
-            "d": base64.b64encode(struct.pack(f"<{len(flat)}f", *flat)).decode("ascii"),
-            "n": len(rows),
-        }
+    #   jupiter   ：日心弧本身即真实借力路径
+    #   saturn    ：进入 SOI（接近段）起至任务结束（坠入大气）
+    #   moons  ×N：卫星 SOI 穿越窗口（二级相对轨迹）
+    MARGIN = 45 * 60.0
 
-    def soi_rows(planet, t_from, t_to):
-        rows = []
-        k = bisect.bisect_left(merged_t, t_from)
-        while k < len(merged_t) and merged_t[k] <= t_to:
-            p = merged[k]
-            c = planet32(planet, p[0])
-            rows.append((p[0], p[1] - c[0], p[2] - c[1], p[3] - c[2]))
-            k += 1
-        return rows
+    def soi_window(t_from, t_to):
+        k0 = bisect.bisect_left(merged_t, t_from)
+        k1 = bisect.bisect_right(merged_t, t_to) - 1
+        if k1 - k0 < 1:
+            return None
+        return {"a": merged_t[k0], "b": merged_t[k1]}
+
+    soi = {}
+    soi["venus"] = [w for w in (
+        soi_window(v1_win[0] - MARGIN, v1_win[1] + MARGIN),
+        soi_window(v2_win[0] - MARGIN, v2_win[1] + MARGIN)) if w]
+    # 发射逃逸段：发射时即位于地球 SOI 内，窗口终点为穿出 SOI 的时刻
+    l_out = merged_soi_span("earth", merged_t[0], et(1997, 11, 15),
+                            SOI_RADII["earth"], step=3600.0)[1]
+    soi["earth"] = [w for w in (
+        soi_window(merged_t[0], l_out + MARGIN),
+        soi_window(ef_win[0] - MARGIN, ef_win[1] + MARGIN)) if w]
+    j_in, j_out = merged_soi_span("jupiter", et(2000, 8, 1), et(2001, 5, 1),
+                                  SOI_RADII["jupiter"])
+    soi["jupiter"] = [w for w in (
+        soi_window(j_in - MARGIN, j_out + MARGIN),) if w]
+
+    # ---------- 卫星 SOI（二级相对轨迹，item 3）----------
+    # 窗口来自卫星近掠段的腿评估细扫描（soi_wins_by_moon，粗网格会漏掉
+    # Enceladus ~490 km 量级的百秒级穿越）。
+    for mname, wins in soi_wins_by_moon.items():
+        rows_packed = []
+        for (wa, wb) in wins:
+            w = soi_window(wa - MARGIN, wb + MARGIN)
+            if w:
+                rows_packed.append(w)
+        if rows_packed:
+            soi[mname] = rows_packed
+            print(f"soi moon {mname}: {len(rows_packed)} windows, "
+                  f"{sum(b['b'] - b['a'] for b in rows_packed) / 3600:.1f} h total")
+
+    s_in, _ = merged_soi_span("saturn", et(2004, 1, 1), ts0,
+                              SOI_RADII["saturn"], step=2 * 3600.0)
+    soi["saturn"] = [w for w in (
+        soi_window(s_in - MARGIN, merged_t[-1]),) if w]
+    cassini["soi"] = soi
+    for _tag in ("venus", "earth", "jupiter", "saturn"):
+        _info = []
+        for _w in soi[_tag]:
+            _t0, _t1 = _w["a"], _w["b"]
+            _p0 = merged_interp(_t0)
+            _p1 = merged_interp(_t1)
+            _c0 = planet32(_tag, _t0)
+            _c1 = planet32(_tag, _t1)
+            _r0 = math.sqrt((_p0[0] - _c0[0]) ** 2 + (_p0[1] - _c0[1]) ** 2 + (_p0[2] - _c0[2]) ** 2)
+            _r1 = math.sqrt((_p1[0] - _c1[0]) ** 2 + (_p1[1] - _c1[1]) ** 2 + (_p1[2] - _c1[2]) ** 2)
+            _info.append(f"{iso(_t0)}..{iso(_t1)} 边缘|rel|={_r0:,.0f}/{_r1:,.0f} km")
+        print(f"soi {_tag}: " + "; ".join(_info))
 
     def moon_cr(name, t):
         """与前端 makeTrack(Catmull-Rom) 逐位一致的卫星本地位置（母星中心系）。
@@ -1692,116 +1762,6 @@ def main():
                               + (2.0 * a0 - 5.0 * a1 + 4.0 * a2 - a3) * s * s
                               + (3.0 * a1 - a0 - 3.0 * a2 + a3) * s * s * s))
         return tuple(out)
-
-    def moon32(name, t):
-        """卫星世界坐标（日心）= 母星网格位置 + 本地 CR —— 与前端 anchor 完全一致"""
-        base = planet32("earth" if name == "moon" else "saturn", t)
-        l = moon_cr(name, t)
-        return (base[0] + l[0], base[1] + l[1], base[2] + l[2])
-
-    def soi_rows_moon(name, t_from, t_to):
-        rows = []
-        k = bisect.bisect_left(merged_t, t_from)
-        while k < len(merged_t) and merged_t[k] <= t_to:
-            p = merged[k]
-            c = moon32(name, p[0])
-            rows.append((p[0], p[1] - c[0], p[2] - c[1], p[3] - c[2]))
-            k += 1
-        return rows
-
-    MARGIN = 45 * 60.0
-    soi = {}
-    soi["venus"] = [
-        pack_soi_rows(soi_rows("venus", v1_win[0] - MARGIN, v1_win[1] + MARGIN)),
-        pack_soi_rows(soi_rows("venus", v2_win[0] - MARGIN, v2_win[1] + MARGIN)),
-    ]
-    # 发射逃逸段：发射时即位于地球 SOI 内，窗口终点为穿出 SOI 的时刻
-    l_out = merged_soi_span("earth", merged_t[0], et(1997, 11, 15),
-                            SOI_RADII["earth"], step=3600.0)[1]
-    soi["earth"] = [
-        pack_soi_rows(soi_rows("earth", merged_t[0], l_out + MARGIN)),
-        pack_soi_rows(soi_rows("earth", ef_win[0] - MARGIN, ef_win[1] + MARGIN)),
-    ]
-    j_in, j_out = merged_soi_span("jupiter", et(2000, 8, 1), et(2001, 5, 1),
-                                  SOI_RADII["jupiter"])
-    soi["jupiter"] = [pack_soi_rows(soi_rows("jupiter", j_in - MARGIN, j_out + MARGIN))]
-
-    # ---------- 卫星 SOI（二级相对轨迹，item 3）----------
-    # 窗口来自卫星近掠段的腿评估细扫描（soi_wins_by_moon，粗网格会漏掉
-    # Enceladus ~490 km 量级的百秒级穿越）；相对轨迹行从 merged 提取
-    # （近掠加密后窗口内为 60s 密度）。此处另扫 merged 收集"近卫星"区段
-    # （d < 6e4 km），供土星 SOI 行保密度用。
-    near_ranges = []   # merged 索引区段 [i0, i1]（任一卫星 6e4 km 内）
-    for mname in MOON_SOI:
-        if mname not in moons_raw:
-            continue
-        t_grid0 = moons_raw[mname][0]
-        k0 = bisect.bisect_left(merged_t, t_grid0)
-        cur_nr = None
-        for i in range(k0, len(merged)):
-            p = merged[i]
-            c = moon32(mname, p[0])
-            d = norm3((p[1] - c[0], p[2] - c[1], p[3] - c[2]))
-            if d < 6.0e4:
-                if cur_nr is None:
-                    cur_nr = [i, i]
-                else:
-                    cur_nr[1] = i
-            elif cur_nr is not None:
-                near_ranges.append(cur_nr)
-                cur_nr = None
-        if cur_nr is not None:
-            near_ranges.append(cur_nr)
-    near_ranges.sort()
-    merged_nr = []
-    for r in near_ranges:
-        if merged_nr and r[0] <= merged_nr[-1][1] + 1:
-            merged_nr[-1][1] = max(merged_nr[-1][1], r[1])
-        else:
-            merged_nr.append(r)
-
-    for mname, wins in soi_wins_by_moon.items():
-        rows_packed = []
-        for (wa, wb) in wins:
-            rows = soi_rows_moon(mname, wa - MARGIN, wb + MARGIN)
-            if len(rows) >= 2:
-                rows_packed.append(pack_soi_rows(rows))
-        if rows_packed:
-            soi[mname] = rows_packed
-            print(f"soi moon {mname}: {len(rows_packed)} windows, "
-                  f"{sum(w['n'] for w in rows_packed)} rows")
-
-    s_in, _ = merged_soi_span("saturn", et(2004, 1, 1), ts0,
-                              SOI_RADII["saturn"], step=2 * 3600.0)
-    # 土星 SOI 行降采样：基础 ≤900s 间距；近卫星区段（近掠几何，item 3/5）
-    # 保留 merged 全密度。行星际行星窗口行数少，维持原样。
-    rows = []
-    last_t = None
-    nri = 0
-    k = bisect.bisect_left(merged_t, s_in - MARGIN)
-    while k < len(merged_t):
-        in_near = nri < len(merged_nr) and merged_nr[nri][0] <= k
-        if in_near and k > merged_nr[nri][1]:
-            nri += 1
-            in_near = nri < len(merged_nr) and merged_nr[nri][0] <= k
-        p = merged[k]
-        if last_t is None or in_near or p[0] - last_t >= 900.0:
-            c = planet32("saturn", p[0])
-            rows.append((p[0], p[1] - c[0], p[2] - c[1], p[3] - c[2]))
-            last_t = p[0]
-        k += 1
-    soi["saturn"] = [pack_soi_rows(rows)]
-    cassini["soi"] = soi
-    for _tag in ("venus", "earth", "jupiter", "saturn"):
-        _ws = soi[_tag]
-        _info = []
-        for _w in _ws:
-            _t = struct.unpack(f"<{_w['n']}d", base64.b64decode(_w["t"]))
-            _d = struct.unpack(f"<{_w['n'] * 3}f", base64.b64decode(_w["d"]))
-            _r0 = math.sqrt(_d[0] ** 2 + _d[1] ** 2 + _d[2] ** 2)
-            _r1 = math.sqrt(_d[-3] ** 2 + _d[-2] ** 2 + _d[-1] ** 2)
-            _info.append(f"{iso(_t[0])}..{iso(_t[-1])} n={_w['n']} 边缘|rel|={_r0:,.0f}/{_r1:,.0f} km")
-        print(f"soi {_tag}: " + "; ".join(_info))
 
     # ---------- Huygens 真实轨迹（dynamo sc_huygens 腿，item 4） ----------
     # 巡航段：sc_huygens/saturn/orb（土星中心，28 个真实根数关键帧，覆盖
@@ -2055,7 +2015,8 @@ def main():
             print(f"  boundary {la.split('/')[-2]}/{la.split('/')[-1]} -> {lb.split('/')[-2]}: gap {dd:,.0f} km {flag}")
 
     t_start = legs["sc_cassini/earth/launch/orb"][0]
-    t_end = legs["sc_cassini/saturn/orb"][1]
+    # 任务终点 = 轨迹延伸后的大气进入时刻（≥ dynamo 腿末帧）
+    t_end = merged_t[-1]
     meta = {
         "j2000Ms": J2000_S * 1000,
         "tStart": t_start,
