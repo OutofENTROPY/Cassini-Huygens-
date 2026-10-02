@@ -49,6 +49,7 @@ window.HuygensVis = (function () {
   let ctx = null;
   const worldNow = [0, 0, 0];     // 当前/最后位置（日心系，供视角跟随）
   let hasWorld = false;
+  let selfFade = 0;               // 本机模型级淡出因子（0=正常，1=特写），供 scene.js 联动
 
   // ---- 解码 ----
   function b64ToBuf(b64, F) {
@@ -203,7 +204,7 @@ window.HuygensVis = (function () {
     return out;
   }
 
-  function update(t, camWorld, projScale, hPx) {
+  function update(t, camWorld, projScale, hPx, sharedFade) {
     if (!ready || !probe || !lines) return;
     const opt = ctx.trailOpts();
     const showH = opt.cassini && opt.huygens !== false;
@@ -216,6 +217,7 @@ window.HuygensVis = (function () {
       probe.visible = false;
       if (marker) marker.visible = false;
       if (labelEl) labelEl.classList.add('hide');
+      selfFade = 0;   // 未分离（无本机轨迹）：不触发航天器轨迹联动淡出
       return;
     }
 
@@ -227,6 +229,14 @@ window.HuygensVis = (function () {
     const pos = worldAt(t);
     worldNow[0] = pos[0]; worldNow[1] = pos[1]; worldNow[2] = pos[2];
     hasWorld = true;
+
+    // 模型级淡出：探测器屏占进入标记 → 模型交接区（1.5→6 px）时本机轨迹淡出；
+    // sharedFade = scene.js 共享淡出因子（任一航天器特写 → 全部航天器轨迹淡出）
+    const dProbe = Math.hypot(pos[0] - camWorld.x, pos[1] - camWorld.y, pos[2] - camWorld.z);
+    const modelPx = probe.userData.span / (projScale * Math.max(dProbe, 1e-9)) * hPx;
+    const ownFade = ctx.modelFadeK ? ctx.modelFadeK(modelPx) : 0;
+    selfFade = ownFade;   // 仅暴露本机因子（供 scene 取 max，避免反馈回路）
+    const tfade = 1 - Math.max(ownFade, sharedFade || 0);
 
     // ---- SOI 淡入因子（绝对/一级/二级亮度联动，与 scene.js 同式） ----
     const dSat = Math.hypot(pos[0] - satW[0], pos[1] - satW[1], pos[2] - satW[2]);
@@ -247,15 +257,15 @@ window.HuygensVis = (function () {
       line.geometry.attributes.position.needsUpdate = true;
     };
     const idxAbs = idxAt(absTimes, nAbs, t);
-    if (showH) {
+    if (showH && tfade > 0.01) {
       rebaseAbs(lines.abs.flown, 0, nAbs);
       lines.abs.flown.geometry.setDrawRange(0, Math.min(idxAbs + 1, nAbs));
-      lines.abs.flown.material.opacity = 0.92 * absDim;
+      lines.abs.flown.material.opacity = 0.92 * absDim * tfade;
       lines.abs.flown.visible = true;
       if (opt.future && !after) {
         rebaseAbs(lines.abs.full, 0, nAbs);
         lines.abs.full.geometry.setDrawRange(idxAbs, Math.max(0, nAbs - idxAbs));
-        lines.abs.full.material.opacity = 0.38 * absDim;
+        lines.abs.full.material.opacity = 0.38 * absDim * tfade;
         lines.abs.full.visible = true;
       } else lines.abs.full.visible = false;
     } else {
@@ -275,30 +285,30 @@ window.HuygensVis = (function () {
     };
     const idxCoast = idxAt(coast.t, nC, t);
     const idxDesc = idxAt(desc.t, nD, t);
-    if (showH && kSat > 0.001) {
+    if (showH && kSat > 0.001 && tfade > 0.01) {
       anchor(lines.sat.flown, coast, satW, 0, nC);
       lines.sat.flown.geometry.setDrawRange(0, idxCoast + 1);
-      lines.sat.flown.material.opacity = 0.88 * satDim;
+      lines.sat.flown.material.opacity = 0.88 * satDim * tfade;
       lines.sat.flown.visible = true;
       if (opt.future && !after) {
         anchor(lines.sat.full, coast, satW, 0, nC);
         lines.sat.full.geometry.setDrawRange(idxCoast, nC - idxCoast);
-        lines.sat.full.material.opacity = 0.30 * satDim;
+        lines.sat.full.material.opacity = 0.30 * satDim * tfade;
         lines.sat.full.visible = true;
       } else lines.sat.full.visible = false;
     } else {
       lines.sat.flown.visible = false;
       lines.sat.full.visible = false;
     }
-    if (showH && kTit > 0.001) {
+    if (showH && kTit > 0.001 && tfade > 0.01) {
       anchor(lines.tit.flown, desc, titW, 0, nD);
       lines.tit.flown.geometry.setDrawRange(0, idxDesc + 1);
-      lines.tit.flown.material.opacity = 0.88 * kTit;
+      lines.tit.flown.material.opacity = 0.88 * kTit * tfade;
       lines.tit.flown.visible = true;
       if (opt.future && !after) {
         anchor(lines.tit.full, desc, titW, 0, nD);
         lines.tit.full.geometry.setDrawRange(idxDesc, nD - idxDesc);
-        lines.tit.full.material.opacity = 0.30 * kTit;
+        lines.tit.full.material.opacity = 0.30 * kTit * tfade;
         lines.tit.full.visible = true;
       } else lines.tit.full.visible = false;
     } else {
@@ -309,8 +319,7 @@ window.HuygensVis = (function () {
     // ---- 模型/姿态 ----
     _v.set(pos[0] - camWorld.x, pos[1] - camWorld.y, pos[2] - camWorld.z);
     probe.position.copy(_v);
-    const d = _v.length();
-    const modelPx = probe.userData.span / (projScale * Math.max(d, 1e-9)) * hPx;
+    const d = dProbe;   // modelPx 已在轨迹段前计算（与淡出共用）
     probe.visible = !gone && modelPx > 1.1;
     if (!gone && !after) {
       const tan = (t <= ENTRY_ET) ? tangentAt(coast, t, [0, 0, 0])
@@ -359,5 +368,8 @@ window.HuygensVis = (function () {
     try { return worldAt(t); } catch (e) { return null; }
   }
 
-  return { init, update, getWorld, tryWorldAt, SEP_ET, ENTRY_ET, TD_ET, LOS_ET };
+  return {
+    init, update, getWorld, tryWorldAt, SEP_ET, ENTRY_ET, TD_ET, LOS_ET,
+    get modelFade() { return selfFade; },   // 本机模型级淡出因子（scene.js 联动读取）
+  };
 })();

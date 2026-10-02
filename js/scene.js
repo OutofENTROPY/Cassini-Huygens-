@@ -413,6 +413,24 @@
     colAttr.needsUpdate = true;
   }
 
+  /* —— 近距淡出 ——
+   * 1) 航天器轨迹（Cassini/Huygens 各自独立触发）：模型屏占像素 1.5→6 px
+   *    （亮点标记 → 模型交接区）smoothstep 淡出 —— 模型级特写时轨迹线穿过
+   *    画面中心成为杂线，随模型出现而退场，拉远即恢复；
+   * 2) 行星/卫星轨道线：该天体盘面屏占（直径/屏高）0.10→0.30 smoothstep
+   *    淡出 —— 点击天体飞至 6R（盘面约 1/3 屏高）时恰好完全隐去，逐天体
+   *    独立生效（贴近土星只隐土星轨道，卫星轨道不受影响）。 */
+  const TRAIL_FADE_PX0 = 1.5, TRAIL_FADE_PX1 = 6.0;
+  const ORBIT_FADE_F0 = 0.10, ORBIT_FADE_F1 = 0.30;
+  let modelFade = 0;   // Cassini 模型级淡出因子（0=正常显示，1=完全隐藏），逐帧刷新
+  function smooth01(x) {
+    x = THREE.MathUtils.clamp(x, 0, 1);
+    return x * x * (3 - 2 * x);
+  }
+  function modelFadeK(modelPx) {
+    return smooth01((modelPx - TRAIL_FADE_PX0) / (TRAIL_FADE_PX1 - TRAIL_FADE_PX0));
+  }
+
   function init(canvas, labelsContainer, onLabelClick) {
     labelsEl = labelsContainer;
     renderer = new THREE.WebGLRenderer({
@@ -1129,6 +1147,7 @@
         line.frustumCulled = false;
         entry.orbitLineObj = line;
         entry.orbitColAttr = orbitColAttr;
+        entry.orbitBaseOp = om.opacity;   // 近距淡出以基础透明度为基准（见 updateRender）
         scene.add(line);
       }
 
@@ -1192,7 +1211,7 @@
         scene.add(huygensMesh);
         huygensMesh.visible = false;
         window.HuygensVis.init({
-          scene, registry, eclToThree, cassiniPosAt, markerTexture, viewOccluded,
+          scene, registry, eclToThree, cassiniPosAt, markerTexture, viewOccluded, modelFadeK,
           trailOpts: () => trailOptions,
         }, huygensMesh);
       }
@@ -1418,8 +1437,9 @@
   let _cassWorld = [0, 0, 0];
   let frameCount = 0;
   let forceOrbitRebuild = true;
-  let lastShadowT = -1;          // 阴影贴图重绘节流：仅时刻变化 / 强制时重绘（图案与相机无关）
+  let lastShadowT = -1;          // 阴影贴图重绘节流：时刻变化 / 相机移动 / 强制时重绘
   let forceShadowRefresh = true; // 切换真实光照 / 首帧强制刷新
+  const lastShadowLightPos = new THREE.Vector3(1e12, 0, 0); // 上次重绘时的光源位置（相机相对系）
   const soiState = { name: null, k: 0, moon: null, k2: 0 };
   // 复用的模块级临时对象（避免每帧分配触发 GC 抖动）
   const _camQInv = new THREE.Quaternion();
@@ -1447,6 +1467,20 @@
   }
 
   function updateRender(t) {
+    const hPx = window.innerHeight;
+    const projScale = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    // Cassini 模型屏占（像素）：驱动航天器轨迹模型级淡出 + 标记/模型交接
+    const dCam = Math.hypot(
+      _cassWorld[0] - camWorld.x,
+      _cassWorld[1] - camWorld.y,
+      _cassWorld[2] - camWorld.z);
+    const modelPx = MODEL_SPAN / (projScale * Math.max(dCam, 1e-6)) * hPx;
+    // 两台航天器任一进入模型特写 → 全部航天器轨迹一并淡出（惠更斯特写时
+    // 卡西尼轨迹同样退场，反之亦然；惠更斯因子滞后一帧，过渡平滑不可感知）
+    modelFade = Math.max(
+      modelFadeK(modelPx),
+      (window.HuygensVis && window.HuygensVis.modelFade) || 0);
+    const trailK = 1 - modelFade;   // 航天器轨迹亮度乘子（模型特写时 → 0）
     for (const [name, entry] of registry) {
       if (name === '__sunLight') continue;
       entry.group.position.set(
@@ -1491,6 +1525,15 @@
       if (name === '__sunLight' || !entry.orbitLineObj || !entry.elems) continue;
       entry.orbitLineObj.visible = trailOptions.planetOrbits;
       if (!trailOptions.planetOrbits) { orbIdx++; continue; }
+      // —— 近距淡出：该天体盘面屏占增大时其轨道线退场（飞至 6R 即完全隐去）——
+      const dO = Math.hypot(
+        entry.world[0] - camWorld.x,
+        entry.world[1] - camWorld.y,
+        entry.world[2] - camWorld.z);
+      const fO = (2 * entry.radius / Math.max(dO, 1e-6)) / projScale;
+      const okFade = smooth01((fO - ORBIT_FADE_F0) / (ORBIT_FADE_F1 - ORBIT_FADE_F0));
+      entry.orbitLineObj.visible = okFade < 0.99;
+      entry.orbitLineObj.material.opacity = entry.orbitBaseOp * (1 - okFade);
       entry.track.at(t, _act);
       if (!ellipsePosEcl(entry, t, _ell)) continue;
       const dx = _act[0] - _ell[0], dy = _act[1] - _ell[1], dz = _act[2] - _ell[2];
@@ -1528,12 +1571,12 @@
     rebaseTrail();
     const idxNow = trailIndexAt(t);
     const cassTrail = trailOptions.cassini;
-    trailFullLine.visible = cassTrail && trailOptions.future;
+    trailFullLine.visible = cassTrail && trailOptions.future && trailK > 0.01;
     if (trailFullLine.visible) {
       trailFullLine.geometry.setDrawRange(idxNow, Math.max(0, trailN - idxNow));
     }
-    trailFlownLine.visible = cassTrail;
-    if (cassTrail) {
+    trailFlownLine.visible = cassTrail && trailK > 0.01;
+    if (trailFlownLine.visible) {
       const startIdx = trailOptions.mode === 'recent' ? lowerBound(trailT, t - RECENT_SPAN) : 0;
       trailFlownLine.geometry.setDrawRange(startIdx, Math.max(2, idxNow + 1 - startIdx));
       applyTrailFade(trailFlownLine, trailT, t, [1.0, 0.827, 0.498], idxNow + 1, startIdx);
@@ -1556,13 +1599,10 @@
     }
 
     // ---- Cassini marker + model（真实尺寸缩放 + 真实姿态）----
+    // hPx/projScale/dCam/modelPx 已在函数顶部计算（与轨迹淡出共用）
     const cassWorld = _cassWorld;
     cassiniMarker.position.set(cassWorld[0] - camWorld.x, cassWorld[1] - camWorld.y, cassWorld[2] - camWorld.z);
     cassiniModel.position.copy(cassiniMarker.position);
-    const dCam = Math.hypot(cassWorld[0] - camWorld.x, cassWorld[1] - camWorld.y, cassWorld[2] - camWorld.z);
-    const hPx = window.innerHeight;
-    const projScale = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
-    const modelPx = MODEL_SPAN / (projScale * Math.max(dCam, 1e-6)) * hPx;
     cassiniModel.scale.setScalar(1);   // 始终真实大小：缩小视角时模型随之缩至真实尺寸
     cassiniModel.visible = modelPx > 1.1;
     // 光晕收敛由模型屏占驱动：模型即将出现（modelPx 2→6px）时保持大标记过渡，
@@ -1583,12 +1623,17 @@
       cassiniStack.visible = !sep;
       cassiniOrbiter.visible = sep;
     }
-    if (window.HuygensVis) window.HuygensVis.update(t, camWorld, projScale, hPx);
+    if (window.HuygensVis) window.HuygensVis.update(t, camWorld, projScale, hPx, modelFade);
 
     // —— 飞船自阴影（真实光照模式）：平行光对准太阳 + 阴影贴图按需重绘 ——
-    // 光源/目标均置于相机相对系（浮动原点），方向 = 飞船→太阳，与相机无关；
-    // 阴影图案只取决于姿态与太阳方向，暂停时无需重绘。模型不可见
-    //（屏占 <1.1px）或真实光照关闭时整条阴影管线休眠，零额外开销。
+    // 光源/目标均置于相机相对系（浮动原点），方向 = 飞船→太阳。阴影贴图内容
+    // 只取决于姿态与太阳方向（相对量，随相机平移不变），但阴影采样矩阵
+    // shadow.matrix 仅在重绘时按当时的相机相对坐标计算——暂停时相机一旦
+    // 移动/缩放，浮点原点整体平移而矩阵仍映射旧坐标，阴影采样错位：小幅
+    // 位移时全船深度比对失败误判入影（整船变黑），大幅位移时采样越出
+    // 阴影锥（自阴影消失）。故除时刻变化外，光源相对位置变化（= 相机
+    // 移动，阈值 1 cm，滤除数值抖动）也须重绘；视角静止时维持零重绘。
+    // 模型不可见（屏占 <1.1px）或真实光照关闭时整条阴影管线休眠，零额外开销。
     if (realisticOn &&
         (cassiniModel.visible || (huygensMesh && huygensMesh.visible))) {
       const dS = Math.hypot(_cassWorld[0], _cassWorld[1], _cassWorld[2]) || 1;
@@ -1598,10 +1643,12 @@
       const ux = -_cassWorld[0] / dS, uy = -_cassWorld[1] / dS, uz = -_cassWorld[2] / dS;
       shipSunLight.position.set(rx + ux * 0.05, ry + uy * 0.05, rz + uz * 0.05);
       shipSunLight.target.position.set(rx, ry, rz);
-      if (forceShadowRefresh || t !== lastShadowT) {
+      if (forceShadowRefresh || t !== lastShadowT ||
+          shipSunLight.position.distanceToSquared(lastShadowLightPos) > 1e-10) {
         renderer.shadowMap.needsUpdate = true;   // 本帧渲染前重绘（渲染器内自动复位）
         lastShadowT = t;
         forceShadowRefresh = false;
+        lastShadowLightPos.copy(shipSunLight.position);
       }
     }
 
@@ -1613,7 +1660,7 @@
     leaderLine.geometry.attributes.position.setXYZ(1,
       cassWorld[0] - camWorld.x, cassWorld[1] - camWorld.y, cassWorld[2] - camWorld.z);
     leaderLine.geometry.attributes.position.needsUpdate = true;
-    leaderLine.visible = cassTrail && idxNow < trailN - 1;
+    leaderLine.visible = cassTrail && idxNow < trailN - 1 && trailK > 0.01;
 
     // glows face camera, fade when close; mini markers for sub-pixel bodies
     const camQ = camera.quaternion;
@@ -1979,6 +2026,7 @@
      cassini 总开关关闭时隐藏全部相对轨迹（soiState 仍用于 HUD 相对速度显示）。 */
   const ABS_DIM1 = 0.45, ABS_DIM2 = 0.35, REL_DIM2 = 0.45;
   function updateSoiTrails(t) {
+    const tfade = 1 - modelFade;   // 模型级特写时航天器轨迹整体淡出（含相对轨迹）
     let bestName = null, bestK = 0;
     let bestMoon = null, bestMK = 0;
     const showRel = trailOptions.cassini;
@@ -2012,7 +2060,7 @@
       const lvlDim = isMoon ? 1 : (1 - REL_DIM2 * bestMK);
       const win = showRel && k > 0.001 ? soiWindowAt(sp, t) : null;
       for (const w of sp.wins) {
-        if (!win || w !== win) { w.full.visible = false; w.flown.visible = false; continue; }
+        if (!win || w !== win || tfade <= 0.01) { w.full.visible = false; w.flown.visible = false; continue; }
         // —— 行星锚定的浮动原点维护：原点漂移或行星漂移超阈值才重建顶点缓冲，
         //    逐帧仅更新对象位置（o − cam + planet_now − pRef，f64 精确补偿）——
         const wx = entry.world[0], wy = entry.world[1], wz = entry.world[2];
@@ -2029,8 +2077,8 @@
           w.o.y - camWorld.y + (wy - w.pRef.y),
           w.o.z - camWorld.z + (wz - w.pRef.z));
         w.flown.position.copy(w.full.position);
-        w.full.material.opacity = 0.30 * k * lvlDim;
-        w.flown.material.opacity = 0.9 * k * lvlDim;
+        w.full.material.opacity = 0.30 * k * lvlDim * tfade;
+        w.flown.material.opacity = 0.9 * k * lvlDim * tfade;
         // 当前时刻在窗口顶点区间内的相对索引
         const rel = Math.min(Math.max(idxNow - w.i0, 0), w.n - 1);
         let wStart = 0;
@@ -2051,9 +2099,9 @@
       }
     }
     // 绝对（日心）轨迹亮度：进入行星 SOI 降 45%，再进入卫星 SOI 再降 35%
-    trailFullLine.material.opacity = 0.34 * absDim;
-    trailFlownLine.material.opacity = 0.95 * absDim;
-    leaderLine.material.opacity = 0.9 * absDim;
+    trailFullLine.material.opacity = 0.34 * absDim * tfade;
+    trailFlownLine.material.opacity = 0.95 * absDim * tfade;
+    leaderLine.material.opacity = 0.9 * absDim * tfade;
     soiState.name = bestK > 0.02 ? bestName : null;
     soiState.k = bestK;
     soiState.moon = bestMK > 0.02 ? bestMoon : null;
