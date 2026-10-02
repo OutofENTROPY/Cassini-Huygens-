@@ -29,7 +29,9 @@ FILES = {
     "sun": "2k_sun.jpg",
     "mercury": "2k_mercury.jpg",
     "venus": "2k_venus_atmosphere.jpg",
-    # 地球：NASA Blue Marble 无云地表 + 独立云层贴图（tools/build_earth_texture.py 生成）
+    # 地球：NASA Eyes on the Solar System 官方地表 + decal 云层贴图
+    # （立方面镶嵌重投影为等距圆柱投影，见 tools/stitch_nasa_eyes_earth.py 与
+    #   tools/build_earth_texture.py）
     "earth": "4k_earth_daymap.jpg",
     "earthClouds": "2k_earth_clouds.png",
     "moon": "2k_moon.jpg",
@@ -56,7 +58,7 @@ def main():
         print(f"  {name}: {len(b)/1024:.0f} KB")
     dst = os.path.join(HERE, "..", "data", "textures.js")
     with open(dst, "w", encoding="utf-8") as f:
-        f.write("/* 行星贴图 (Solar System Scope, CC BY 4.0) — base64 data URI */\n")
+        f.write("/* 行星贴图 (Solar System Scope, CC BY 4.0；地球为 NASA Eyes 官方贴图) — base64 data URI */\n")
         f.write("window.TEXTURE_DATA = ")
         f.write(json.dumps(out, separators=(",", ":")))
         f.write(";\n")
