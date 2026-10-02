@@ -256,8 +256,8 @@ body.hud-open #body-info:not(.hidden) { display: block; }
 #bi-rows .bi-row b { color: var(--text); font-weight: 500; text-align: right; }
 
 /* ---------- 事件卡 ---------- */
-/* 点击任务事件时弹出，位于左下角（时间轴上方）；
-   body.event-folded 时收纳进 #event-fab 按钮（移动端默认，桌面可手动收起） */
+/* 点击任务事件后由左上角通知按钮（◉ 右侧）展开，位于左下角（时间轴上方）；
+   body.event-folded 时收进 #event-fab 通知按钮（点任务事件默认收起，按钮点按切换） */
 #event-card {
   position: absolute; left: 18px; bottom: 142px; z-index: 11;
   width: 336px; max-width: calc(100vw - 36px);
@@ -292,16 +292,16 @@ body.event-folded #event-card { opacity: 0; transform: translateY(16px) scale(0.
 #event-title { font-size: 16px; margin: 6px 0 8px; font-weight: 600; letter-spacing: 0.2px; }
 #event-text { font-size: 12.8px; line-height: 1.75; color: var(--text-2); }
 
-/* 事件卡收纳按钮：桌面固定在左下角（事件卡原位，fixed 免受 #hud-stack 定位上下文影响），
-   移动端收纳进左上角按钮列（见底部媒体查询） */
+/* 事件卡通知按钮：点击任务事件后弹出，固定在左上角 ◉ 详情按钮右侧（手机 / 桌面一致，
+   absolute 挂在 #hud-stack 内与 ◉ 对齐，不挤压下方卡片流式布局）。
+   点按展开事件卡、再点收起——按钮常驻不消失；展开期间主色高亮，收起后呼吸闪烁提示 */
 #event-fab {
   display: none;
-  position: fixed; left: 18px; bottom: 142px; z-index: 11;
-  height: 38px; padding: 0 15px 0 13px;
-  align-items: center; gap: 7px;
-  border-radius: var(--r-full);
+  position: absolute; left: 46px; top: 0; z-index: 11;
+  width: 36px; height: 36px; border-radius: 50%;
+  align-items: center; justify-content: center;
   background: var(--glass); border: 1px solid var(--stroke);
-  color: var(--text-2); font-size: 12.5px; font-weight: 500; cursor: pointer;
+  color: var(--text-2); cursor: pointer;
   backdrop-filter: var(--blur-btn); -webkit-backdrop-filter: var(--blur-btn);
   box-shadow: var(--shadow-1);
   transition: background-color .35s var(--ease), color .35s var(--ease), transform .15s var(--ease);
@@ -309,8 +309,23 @@ body.event-folded #event-card { opacity: 0; transform: translateY(16px) scale(0.
 #event-fab svg { width: 16px; height: 16px; flex: none; }
 #event-fab:hover { color: var(--text); background: var(--glass-hover); }
 #event-fab:active { transform: scale(0.96); }
-body.event-open.event-folded #event-fab { display: flex; }
-/* 呼吸闪烁：提示有事件卡收在按钮中（移动端启用，见媒体查询） */
+body.event-open #event-fab { display: flex; }
+/* 弹出动画：首次出现时缩放淡入（display 切换触发一次，收展切换不重播） */
+@keyframes fab-in {
+  from { opacity: 0; transform: scale(0.6); }
+  to   { opacity: 1; transform: scale(1); }
+}
+/* 收起状态：呼吸闪烁提示事件卡收在按钮中 */
+body.event-open.event-folded #event-fab {
+  animation: fab-in .28s var(--spring), fab-breathe 2.2s ease-in-out .3s infinite;
+}
+/* 展开状态：主色高亮（与 ◉ 展开态一致），提示卡片当前展开、再点收起 */
+body.event-open:not(.event-folded) #event-fab {
+  animation: fab-in .28s var(--spring);
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-color: rgba(92, 157, 255, 0.45);
+}
 @keyframes fab-breathe {
   0%, 100% { box-shadow: 0 0 0 0 rgba(92,157,255,.50), var(--shadow-1); }
   50%      { box-shadow: 0 0 0 9px rgba(92,157,255,0), var(--shadow-1); }
@@ -526,13 +541,8 @@ body.event-open.event-folded #event-fab { display: flex; }
   #hud-date { font-size: 14px; }
   #body-info { max-width: calc(100vw - 90px); }
 
-  /* 任务事件收纳按钮：进入左上角按钮列（◉ 下方），未展开时呼吸闪烁提示 */
-  #event-fab {
-    position: static; width: 36px; height: 36px; padding: 0;
-    justify-content: center;
-  }
-  #event-fab span { display: none; }
-  body.event-open.event-folded #event-fab { animation: fab-breathe 2.2s ease-in-out infinite; }
+  /* 任务事件通知按钮与桌面一致（◉ 右侧），横向间距随按钮列 gap 收紧为 8px */
+  #event-fab { left: 44px; }
 
   /* 速率控制：手机上收窄保留（不再是隐藏），保证快进/倒放速率可见可调 */
   #rate-wrap {
@@ -658,7 +668,9 @@ body.event-open.event-folded #event-fab { display: flex; }
   pointer-events: auto; cursor: pointer;
   padding: 2px 5px;
   white-space: nowrap;
-  transition: color .4s var(--ease), opacity .35s;
+  visibility: visible;
+  /* 淡入淡出：visibility 零时长翻转，显示时立即生效、隐藏时延迟到淡出结束 */
+  transition: color .4s var(--ease), opacity .35s var(--ease), visibility 0s;
 }
 .label:hover { color: #ffffff; }
 .label.sc { color: var(--accent2); font-weight: 600; }
@@ -674,7 +686,10 @@ body.event-open.event-folded #event-fab { display: flex; }
   background: rgba(242,244,248,.4); margin: 2px auto 0;
 }
 .label.dim { opacity: .45; }
-.label.hide { display: none; }
+.label.hide {
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: color .4s var(--ease), opacity .35s var(--ease), visibility 0s .35s;
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
