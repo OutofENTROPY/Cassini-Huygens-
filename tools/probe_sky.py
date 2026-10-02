@@ -26,7 +26,7 @@ for b in best[:8]:
     print(f"  {b[0]:6.1f}  col={b[1]:3d}  row={b[2]:3d}")
 
 # ---- 环 PNG ----
-ring = Image.open(os.path.join(T, "2k_saturn_ring_alpha.png"))
+ring = Image.open(os.path.join(T, "nasa_saturn_ring.png"))
 print("\nring png:", ring.size, ring.mode)
 # 检查 alpha 分布：按列统计非透明像素比例（判断径向是横向还是纵向）
 a = ring.split()[-1] if "A" in ring.mode else None
