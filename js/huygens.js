@@ -327,7 +327,8 @@ window.HuygensVis = (function () {
       shrink = shrink * shrink * (3 - 2 * shrink);
       const markerPx = 10 - 7.4 * shrink;
       const op = gone ? 0 : Math.max(0, Math.min(1, (6 - modelPx) / 4)) * (1 - 0.1 * shrink);
-      marker.visible = op > 0.01;
+      // 遮挡剔除（同 Cassini 标记）：探测器被行星盘面挡住时隐藏亮点
+      marker.visible = op > 0.01 && !ctx.viewOccluded(pos[0], pos[1], pos[2], null);
       marker.material.opacity = op;
       marker.position.copy(probe.position);
       const desired = Math.max(projScale * d * (markerPx / hPx), 0.02);   // 精确屏占（无 ×2 系数）
