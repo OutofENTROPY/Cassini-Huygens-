@@ -191,9 +191,9 @@
     { name: 'titan', radius: 2574.7, tex: 'proc:titan', label: 'Titan', atmo: { color: 0xd89550, intensity: 0.65, power: 2.4 } },
     { name: 'enceladus', radius: 252.1, tex: 'proc:enceladus', label: 'Enceladus' },
     // Iapetus：NASA Cassini ISS 真实镶嵌（替换有误的程序化贴图）；texOffset 把暗区
-    // （Cassini Regio）质心对齐到轨道前导半球——潮汐锁定下本地 +Z 指向 Saturn，
-    // 顺行卫星前导方向 = 本地 -X = equirect u 0/1 接缝
-    { name: 'iapetus', radius: 734.5, tex: 'iapetus', texOffset: 0.2523, label: 'Iapetus' },
+    // （Cassini Regio）质心对齐到轨道前导半球——潮汐锁定下本地 +X（u=0.5）指向
+    // Saturn，顺行卫星前导方向 = 本地 +Z = u 0.25；原镶嵌暗区质心 u≈0.2523
+    { name: 'iapetus', radius: 734.5, tex: 'iapetus', texOffset: 0.0023, label: 'Iapetus' },
     { name: 'rhea', radius: 763.8, tex: 'proc:rhea', label: 'Rhea' },
     { name: 'dione', radius: 561.4, tex: 'proc:dione', label: 'Dione' },
     { name: 'tethys', radius: 531.1, tex: 'proc:tethys', label: 'Tethys' },
@@ -247,6 +247,7 @@
 
   let renderer, scene, camera, labelsEl;
   let sunLight, ambient;
+  let shipSunLight = null;   // 飞船专属平行光（真实光照模式承担直射光 + 自阴影）
   let realisticOn = false;   // 真实光照模式（主循环内掩食计算仅在此模式生效）
   // 直射光强度：两种模式恒定 —— 取原真实 3.0 / 普通 1.15 的平均（见 setRealisticLighting）
   const SUN_INTENSITY = 2.075;
@@ -434,6 +435,28 @@
     scene.add(ambient);
     registry.set('__sunLight', { light: sunLight, ambient });
 
+    // —— 飞船自阴影（真实光照模式，item：实时遮挡关系）——
+    // 太阳在飞船尺度（18 m）下即平行光：独立 DirectionalLight 承担飞船直射光，
+    // 方向逐帧对准太阳，紧凑正交阴影相机（±14 m / 深度 2–8 cm）实时解算机体
+    // 自遮挡（天线盘后、机身背阳面不反光）。行星侧材质注入「忽略平行光」补丁
+    //（其平行光方向在行星处并不指向太阳）；普通模式 intensity=0 + 阴影贴图
+    // 按需重绘 → 关闭真实光照零开销，模式切换仅改 uniform 不触发重编译。
+    shipSunLight = new THREE.DirectionalLight(0xffffff, 0);
+    shipSunLight.castShadow = true;
+    shipSunLight.shadow.mapSize.set(1024, 1024);
+    const scCam = shipSunLight.shadow.camera;
+    scCam.near = 0.02; scCam.far = 0.08;           // 光源置于飞船向日侧 0.05 km 处
+    scCam.left = -0.014; scCam.right = 0.014;      // ±14 m：覆盖 18 m 翼展 + 余量
+    scCam.top = 0.014; scCam.bottom = -0.014;
+    scCam.updateProjectionMatrix();
+    shipSunLight.shadow.bias = -0.0002;
+    shipSunLight.shadow.normalBias = 0.00006;      // ~2 texel（texel ≈ 2.7 cm）
+    scene.add(shipSunLight);
+    scene.add(shipSunLight.target);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.autoUpdate = false;   // 手动节流：仅真实光照且模型可见时重绘
+
     buildSky();
     buildBodies(onLabelClick);
     buildCassini();
@@ -454,7 +477,10 @@
    * 真实光照模式环境光为 0（阴影全黑）。
    * 亮面两种模式恒定：直射光取原真实 3.0 / 普通 1.15 的平均 2.075，开关只
    * 改变暗面。真实模式额外熄灭飞船模型级补光（HemisphereLight 全局生效，
-   * 泄漏到行星暗面）→ 暗面亮度严格为 0；普通模式暗面留环境光 + 补光。 */
+   * 泄漏到行星暗面）→ 暗面亮度严格为 0；普通模式暗面留环境光 + 补光。
+   * 飞船直射光切换：普通模式由太阳点光承担（平行光 intensity=0 不参与），
+   * 真实模式改由带自阴影的飞船平行光承担（船体材质点光贡献经 uPointOff
+   * 归零）——强度与点光等值同向，外观无缝衔接，仅 uniform 切换无重编译。 */
   function setRealisticLighting(on) {
     if (!ambient) return;
     realisticOn = on;
@@ -468,6 +494,11 @@
       if (window.CassiniModel) window.CassiniModel.setEclipse(1, 1);
     }
     if (window.CassiniModel) window.CassiniModel.setFillLight(!on);
+    if (shipSunLight) {
+      shipSunLight.intensity = on ? SUN_INTENSITY : 0;
+      forceShadowRefresh = true;
+    }
+    if (window.CassiniModel) window.CassiniModel.setSunMode(on);
   }
 
   // ---------- sky sphere（低亮度真实天空球 + 恒星点云） ----------
@@ -515,6 +546,11 @@
     }
     const tex = new THREE.CanvasTexture(cv);
     tex.encoding = THREE.sRGBEncoding;
+    // 真实星空烘焙 → 飞船材质环境反射（cassini_model.js 贴图还原：金箔/铝件
+    // 反射真实银河带，替代程序化假星空；envMap 在材质增强时经 PMREM 过滤）
+    if (window.CassiniModel && window.CassiniModel.setEnvironment) {
+      window.CassiniModel.setEnvironment(cv);
+    }
     const mat = new THREE.MeshBasicMaterial({
       map: tex, side: THREE.BackSide, depthWrite: false, fog: false,
     });
@@ -623,21 +659,34 @@
     return new THREE.CanvasTexture(c);
   }
 
-  /* 太阳光晕壳层（NASA Eyes 风格）：按“视线到日心的瞄准距离 b”计算径向衰减，
-   * 球面几何在任意视距下稳定（无广告牌近裁剪切边），日面圆盘自然遮挡中心亮核。
-   * 外壳 BackSide = 盘外晕；内壳 FrontSide + pow 轮廓 = 盘缘增亮。
+  /* 太阳光晕壳层（NASA Eyes 风格）：按“视线到日心的瞄准距离 b”（日面半径归一）
+   * 计算径向衰减，球面几何在任意视距下稳定（无广告牌近裁剪切边），日面圆盘
+   * 自然遮挡中心亮核。双层剖面（mode）：
+   *   inner（2.6R 壳）——色球/内冕：贴日缘亮暖晕 = 色球窄指数 exp(-9s) + 内冕
+   *     缓指数 exp(-2.3s)（s = b-1，日缘外距离）；
+   *   outer（7R 壳）——外冕长晕：慢指数 exp(-0.85s) + 世界空间角向冕流
+   *     （整数次谐波 sin 叠加，2π 连续、随太阳而非相机固定，赤道带权重）。
+   * 两壳壳缘 smoothstep 窗口精确归零，消除旧版高斯剖面在壳缘的硬切边。
    * 含 logdepthbuf chunk：与对数深度缓冲的圆盘/行星正确做深度判定。 */
   function sunGlowShellMaterial(opt) {
-    const glowLine = opt.rim
-      ? 'float g = uI * pow(min(b, 1.6), 8.0);'
-      : 'float g = exp(-b * b * uK) * uI;';
+    const profile = opt.mode === 'outer'
+      ? `float s = max(b - 1.0, 0.0);
+         float g = exp(-s * 0.85) * uI;
+         vec3 nrm = normalize(vW - vSunC);
+         float ang = atan(nrm.z, nrm.x);
+         float belt = 1.0 - abs(nrm.y);
+         float str = sin(ang * 7.0 + 1.3) * 0.55 + sin(ang * 13.0 + 4.1) * 0.30 + sin(ang * 23.0 + 2.8) * 0.15;
+         g *= 1.0 + uStrAmp * str * belt;`
+      : `float s = max(b - 1.0, 0.0);
+         float g = (0.60 * exp(-s * 9.0) + 0.42 * exp(-s * 2.3)) * uI;`;
     return new THREE.ShaderMaterial({
       uniforms: {
         uR: { value: opt.rSun },
-        uK: { value: opt.k },
         uI: { value: opt.intensity },
         uColor: { value: new THREE.Color(opt.color) },
         uFade: { value: 1.0 },
+        uEdge: { value: opt.shell },
+        uStrAmp: { value: 0.45 },
       },
       vertexShader: `
         varying vec3 vW; varying vec3 vSunC;
@@ -650,7 +699,8 @@
           #include <logdepthbuf_vertex>
         }`,
       fragmentShader: `
-        uniform float uR; uniform float uK; uniform float uI; uniform vec3 uColor; uniform float uFade;
+        uniform float uR; uniform float uI; uniform vec3 uColor; uniform float uFade;
+        uniform float uEdge; uniform float uStrAmp;
         varying vec3 vW; varying vec3 vSunC;
         #include <common>
         #include <logdepthbuf_pars_fragment>
@@ -660,8 +710,9 @@
           vec3 oc = vSunC - cameraPosition;
           float tP = dot(oc, D);
           float b = length(oc - D * tP) / uR;   // 瞄准距离（日面半径归一）
-          ${glowLine}
-          gl_FragColor = vec4(uColor * max(g * uFade, 0.0), 1.0);
+          ${profile}
+          float win = 1.0 - smoothstep(uEdge * 0.62, uEdge, b);   // 壳缘窗口归零
+          gl_FragColor = vec4(uColor * max(g * win * uFade, 0.0), 1.0);
         }`,
       side: opt.side,
       transparent: true,
@@ -757,6 +808,36 @@
     mat.customProgramCacheKey = () => 'atmo-rim';
   }
 
+  /* 行星侧材质「忽略平行光」：飞船自阴影的平行光只应作用于飞船本体——
+   * 该光方向按飞船-太阳连线设定，在行星处并不指向太阳，须在行星/云层/环
+   * 材质内将平行光直射贡献归零（点光不受影响）。注意 onBeforeCompile 拿到
+   * 的是未展开 #include 的原始模板——光循环体在 lights_fragment_begin
+   * chunk 内部，直接替换 light-info 语句是静默 no-op；故加载期从
+   * ShaderChunk 取 chunk 全文注入归零语句，编译时整体替换 include 指令
+   * （lib vendored r147，锚点串唯一）。普通模式平行光 intensity=0 双保险。
+   * tag 用于区分补丁链变体（onBeforeCompile 闭包的 toString 无法区分捕获
+   * 的 prev，缺失会导致 program 缓存错配）。 */
+  const LF_BEGIN_NODIR = (() => {
+    const chunk = THREE.ShaderChunk.lights_fragment_begin;
+    const out = chunk.replace(
+      'getDirectionalLightInfo( directionalLight, geometry, directLight );',
+      'getDirectionalLightInfo( directionalLight, geometry, directLight );\n\t\t\tdirectLight.color = vec3( 0.0 );');
+    if (out === chunk) console.warn('excludeDirLight: lights_fragment_begin 锚点未命中');
+    return out;
+  })();
+
+  function excludeDirLight(mat, tag) {
+    const prevCompile = mat.onBeforeCompile;
+    mat.onBeforeCompile = (shader, r) => {
+      if (prevCompile) prevCompile(shader, r);
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <lights_fragment_begin>', LF_BEGIN_NODIR);
+    };
+    const prevKey = mat.customProgramCacheKey;
+    mat.customProgramCacheKey = () =>
+      (prevKey ? prevKey.call(mat) : '') + '+nodir' + (tag || '');
+  }
+
   /* —— 气态行星环参数（item 4）——
    * 内外半径（km，真实值）与纹理：土星用 Solar System Scope 烘焙贴图；
    * 木/天/海用程序化径向纹理（js/textures.js），alpha 按真实光深：
@@ -816,6 +897,7 @@
             }
           }`);
     };
+    excludeDirLight(rm, 'ring');   // 环面同样忽略飞船平行光（本影判定只针对太阳点光）
     const ring = new THREE.Mesh(rg, rm);
     ring.rotation.x = Math.PI / 2;
     tiltGroup.add(ring);
@@ -921,17 +1003,28 @@
       }
 
       if (def.name === 'sun') {
-        // 光晕壳层：按瞄准距离指数衰减，盘外柔光晕贴紧日缘（盘缘增亮在日面材质内做）
-        const outer = new THREE.Mesh(
+        // 双层光晕壳：内壳 = 色球/内冕贴缘亮暖晕（2.6R，盘缘增亮在日面材质内做）；
+        // 外壳 = 外冕长晕 + 冕流（7R）。壳缘窗口归零无硬边；相机临近时 uFade 淡出
+        const glowInner = new THREE.Mesh(
           new THREE.SphereGeometry(1, 48, 24),
           sunGlowShellMaterial({
-            rSun: def.radius, k: 0.75, intensity: 1.5, color: 0xfff0be,
-            side: THREE.BackSide,
+            rSun: def.radius, mode: 'inner', shell: 2.6,
+            intensity: 1.5, color: 0xfff0be, side: THREE.BackSide,
           }));
-        outer.scale.setScalar(def.radius * 2.8);
-        outer.renderOrder = 1;
-        group.add(outer);
-        entry.glowShell = outer;
+        glowInner.scale.setScalar(def.radius * 2.6);
+        glowInner.renderOrder = 1;
+        group.add(glowInner);
+        const glowOuter = new THREE.Mesh(
+          new THREE.SphereGeometry(1, 64, 32),
+          sunGlowShellMaterial({
+            rSun: def.radius, mode: 'outer', shell: 7.0,
+            intensity: 0.5, color: 0xfff6d8, side: THREE.BackSide,
+          }));
+        glowOuter.scale.setScalar(def.radius * 7.0);
+        glowOuter.renderOrder = 1;
+        group.add(glowOuter);
+        entry.glowShell = glowInner;
+        entry.glowShellOuter = glowOuter;
       } else if (def.glow) {
         const gm = new THREE.MeshBasicMaterial({
           map: glowTexture(def.glow),
@@ -1001,11 +1094,17 @@
               }`);
         };
         mat.userData.shadowU = shU;
+        mat.customProgramCacheKey = () => 'saturn-ringshadow';   // 补丁链变体标记（防 program 缓存错配）
       }
 
       entry.mesh = mesh;
       entry.tiltGroup = tiltGroup;
       entry.group = group;
+      if (!def.emissive) entry.surfMat = mat;   // 近距曝光补偿（见 updateRender 循环）
+      if (!def.emissive) {
+        excludeDirLight(mat);                             // 行星表面：忽略飞船平行光
+        if (entry.clouds) excludeDirLight(entry.clouds.material);
+      }
       scene.add(group);
 
       if (entry.orbitLine) {
@@ -1093,7 +1192,7 @@
         scene.add(huygensMesh);
         huygensMesh.visible = false;
         window.HuygensVis.init({
-          scene, registry, eclToThree, cassiniPosAt, markerTexture,
+          scene, registry, eclToThree, cassiniPosAt, markerTexture, viewOccluded,
           trailOpts: () => trailOptions,
         }, huygensMesh);
       }
@@ -1319,6 +1418,8 @@
   let _cassWorld = [0, 0, 0];
   let frameCount = 0;
   let forceOrbitRebuild = true;
+  let lastShadowT = -1;          // 阴影贴图重绘节流：仅时刻变化 / 强制时重绘（图案与相机无关）
+  let forceShadowRefresh = true; // 切换真实光照 / 首帧强制刷新
   const soiState = { name: null, k: 0, moon: null, k2: 0 };
   // 复用的模块级临时对象（避免每帧分配触发 GC 抖动）
   const _camQInv = new THREE.Quaternion();
@@ -1341,7 +1442,7 @@
       }
     }
     cassiniPosAt(t, tmpV);
-    _cassWorld = [tmpV[0], tmpV[1], tmpV[2]];
+    _cassWorld[0] = tmpV[0]; _cassWorld[1] = tmpV[1]; _cassWorld[2] = tmpV[2];
     return { cassWorld: _cassWorld };
   }
 
@@ -1472,6 +1573,9 @@
     cassiniMarker.material.opacity = Math.max(0, Math.min(1, (6 - modelPx) / 4)) * (1 - 0.1 * shrink);
     const desired = projScale * dCam * (markerPx / hPx);   // 精确屏占 = markerPx（无 ×2 放大系数）
     cassiniMarker.scale.set(Math.max(desired, 0.02), Math.max(desired, 0.02), 1);
+    // 遮挡剔除（同太阳标记）：Cassini 藏到行星盘面之后时隐藏亮点
+    cassiniMarker.visible = cassiniMarker.material.opacity > 0.01 &&
+      !viewOccluded(cassWorld[0], cassWorld[1], cassWorld[2], null);
     updateCassiniAttitude(cassWorld, t);
     // 分离（2004-12-25）：组合体 → 轨道器（without-Huygens）；Huygens 独立飞行（js/huygens.js）
     if (cassiniStack && cassiniOrbiter) {
@@ -1480,6 +1584,26 @@
       cassiniOrbiter.visible = sep;
     }
     if (window.HuygensVis) window.HuygensVis.update(t, camWorld, projScale, hPx);
+
+    // —— 飞船自阴影（真实光照模式）：平行光对准太阳 + 阴影贴图按需重绘 ——
+    // 光源/目标均置于相机相对系（浮动原点），方向 = 飞船→太阳，与相机无关；
+    // 阴影图案只取决于姿态与太阳方向，暂停时无需重绘。模型不可见
+    //（屏占 <1.1px）或真实光照关闭时整条阴影管线休眠，零额外开销。
+    if (realisticOn &&
+        (cassiniModel.visible || (huygensMesh && huygensMesh.visible))) {
+      const dS = Math.hypot(_cassWorld[0], _cassWorld[1], _cassWorld[2]) || 1;
+      const rx = _cassWorld[0] - camWorld.x,
+            ry = _cassWorld[1] - camWorld.y,
+            rz = _cassWorld[2] - camWorld.z;
+      const ux = -_cassWorld[0] / dS, uy = -_cassWorld[1] / dS, uz = -_cassWorld[2] / dS;
+      shipSunLight.position.set(rx + ux * 0.05, ry + uy * 0.05, rz + uz * 0.05);
+      shipSunLight.target.position.set(rx, ry, rz);
+      if (forceShadowRefresh || t !== lastShadowT) {
+        renderer.shadowMap.needsUpdate = true;   // 本帧渲染前重绘（渲染器内自动复位）
+        lastShadowT = t;
+        forceShadowRefresh = false;
+      }
+    }
 
     // 引导线段：轨迹末端 → 当前位置
     leaderLine.geometry.attributes.position.setXYZ(0,
@@ -1499,6 +1623,17 @@
         entry.world[0] - camWorld.x,
         entry.world[1] - camWorld.y,
         entry.world[2] - camWorld.z);
+      // —— 近距曝光补偿 —— 行星盘面逼近满屏时按比例压暗表面/云层材质，
+      // 抑制 Lambert 亮面削顶（直射光 2.075 × 浅色贴图 → 贴近亮行星满屏白板，
+      // 条带细节尽失；旧 1.25R 下限即已出现）。屏占 <0.55 屏高完全不动作，
+      // 远观亮度零变化；此后按 (0.55/full)^0.6 平滑压暗，下限 0.42。
+      // 只调材质 color 乘子，不影响飞船/光晕/环，模拟眼与相机的曝光适应。
+      if (entry.surfMat) {
+        const full = (2 * entry.radius / Math.max(d, 1e-6)) / projScale;
+        const dim = full > 0.55 ? Math.max(0.42, Math.pow(0.55 / full, 0.6)) : 1;
+        entry.surfMat.color.setScalar(dim);
+        if (entry.clouds) entry.clouds.material.color.setScalar(dim);
+      }
       if (entry.glow) {
         // 行星光晕：朝向相机，靠近即淡出避免遮蔽（太阳光晕已改为壳层，无此需求）
         const k = Math.min(1, Math.max(0, (d / (entry.radius * 14)) - 0.35));
@@ -1507,9 +1642,14 @@
         entry.glow.visible = k > 0.01;
       }
       if (entry.glowShell) {
-        // 相机进入光晕壳内（<2.8R）时整体淡出，避免暖纱遮蔽星空
+        // 相机进入光晕壳内时淡出，避免暖纱遮蔽星空（内外壳阈值随各自壳半径）
+        const r = entry.radius;
         entry.glowShell.material.uniforms.uFade.value =
-          Math.min(1, Math.max(0, (d / (entry.radius * 2.8) - 0.55) / 0.45));
+          Math.min(1, Math.max(0, (d / r - 1.5) / 1.1));
+        if (entry.glowShellOuter) {
+          entry.glowShellOuter.material.uniforms.uFade.value =
+            Math.min(1, Math.max(0, (d / r - 2.4) / 4.6));
+        }
       }
       if (entry.miniMarker) {
         const mp = entry.miniParams;
@@ -1523,7 +1663,9 @@
             entry.world[2] - camWorld.z);
           entry.miniMarker.scale.set(ws, ws, 1);
           entry.miniMarker.material.opacity = mp.op0 + (mp.op1 - mp.op0) * (f / mp.size);
-          entry.miniMarker.visible = true;
+          // 遮挡剔除：天体被更近行星挡住时亮点一并隐藏（太阳标记 depthTest:false）
+          entry.miniMarker.visible = !viewOccluded(
+            entry.world[0], entry.world[1], entry.world[2], name);
         } else {
           entry.miniMarker.visible = false;
         }
@@ -1548,7 +1690,10 @@
           _v1.set(p.world[0] - entry.world[0], p.world[1] - entry.world[1], p.world[2] - entry.world[2]);
           entry.tiltGroup.getWorldQuaternion(_q1).invert();
           _v1.applyQuaternion(_q1);
-          entry.mesh.rotation.y = Math.atan2(_v1.x, _v1.z);
+          // SphereGeometry 的 equirect 中心（u=0.5 = 本初子午线/月球正面）在网格
+          // 局部 +X 轴：rotation.y 须让 +X 指向母星。旧式 atan2(x,z) 指 +Z，
+          // 正面恒偏 90°（月球朝向地球的是西侧月海而非正面中心）
+          entry.mesh.rotation.y = Math.atan2(-_v1.z, _v1.x);
           continue;
         }
       }
@@ -1592,8 +1737,37 @@
     return f;
   }
 
-  /* —— Cassini 真实姿态状态（NASA 任务记录，item 6）——
-   * HGA(+Z) 默认对地通信（Earth 方向，实时由历表求解）。三个有据可查的例外：
+  /* —— 亮点标记视线遮挡 —— 太阳/Cassini/Huygens 标记 depthTest:false（标记须
+   * 盖过自身天体的近侧盘面，深度缓冲无法区分「被自身盘面挡住」与「被前方
+   * 行星挡住」），改用 CPU 射线-球体判定：相机→目标连线被任一更近天体
+   * （skip = 目标自身，排除自身盘面）的球面截断 → 目标在行星盘面之后，
+   * 标记随天体一并隐藏（土星遮挡太阳/飞船时不再显示穿透亮点）。 */
+  function viewOccluded(wx, wy, wz, skip) {
+    const dx = wx - camWorld.x, dy = wy - camWorld.y, dz = wz - camWorld.z;
+    const len2 = dx * dx + dy * dy + dz * dz;
+    if (len2 < 1e-12) return false;
+    for (const [name, e] of registry) {
+      if (name === '__sunLight' || name === skip || !e.radius) continue;
+      const bx = e.world[0] - camWorld.x,
+            by = e.world[1] - camWorld.y,
+            bz = e.world[2] - camWorld.z;
+      const t = (bx * dx + by * dy + bz * dz) / len2;   // 射线参数：0=相机 1=目标
+      if (t <= 0 || t >= 1) continue;                   // 遮挡体须位于相机与目标之间
+      const cx = bx - dx * t, cy = by - dy * t, cz = bz - dz * t;
+      if (cx * cx + cy * cy + cz * cz < e.radius * e.radius) return true;
+    }
+    return false;
+  }
+
+  /* —— Cassini 真实姿态回放（NASA 官方数据驱动）——
+   * 数据: NASA Eyes on the Solar System dynamo sc_cassini/quat（NAIF SPICE CK
+   *   定轨姿态的烘焙产物），覆盖 1997-10-15 发射 → 2017-09-15 任务终段；由
+   *   tools/fetch_attitude.py 下载、tools/bake_attitude.py 转换为场景系四元数
+   *   (window.CASSINI_ATT)：Q_scene(t) = A ⊗ q(t) ⊗ M ⊗ Q_GLB⁻¹（坐标链见该
+   *   脚本头注释，滚动自由度与 Eyes 渲染一致）。
+   * 覆盖内逐样本 slerp 回放；HUD 姿态标签按真实 HGA(+Z) 指向实时分类。
+   * 覆盖外（2017-09-15 05:00Z 后坠入大气段等）退回任务记录启发式：HGA(+Z)
+   * 默认对地通信（Earth 方向，实时由历表求解），三个有据可查的例外：
    *  1. SOI 防护/点火（2004-07-01）：穿越环面前 ~1 h 起 HGA 转向前方（行进方向）
    *     作防尘盾，保持到 96 分钟点火结束（02:48 UTC），期间与地球失联（JPL
    *     mission status report；穿越时刻由轨迹数据在土星赤道面内的法向坐标
@@ -1604,8 +1778,8 @@
    *  3. Grand Finale 环缝俯冲（2017-04-26 起共 22 次）：穿越前后 HGA 指向行进
    *     方向（"HGA to RAM" 防护姿态；首次俯冲按 NASA 记录为边缘对准、不用盾）。
    * 终段再入保持对地直至烧毁（无例外）。当前状态名经
-   * window.CassiniScene.attitudeState 供 HUD 显示；姿态切换按墙钟指数收敛
-   * （真实机动在数分钟内完成，回放/跳转时平滑跟随）。 */
+   * window.CassiniScene.attitudeState 供 HUD 显示；姿态逐帧直接跟随数据，
+   * 不做过渡动画（跳转/变速时朝向即时切换）。 */
   const Z_AXIS = new THREE.Vector3(0, 0, 1);
   const _attV = new THREE.Vector3();
   const _attQ = new THREE.Quaternion();
@@ -1626,13 +1800,69 @@
     ram: '防护姿态 · HGA→前向（防尘盾）',
     burn: 'SOI 点火 · HGA→前向（防尘盾）',
     titan: '中继惠更斯 · HGA→Titan',
+    free: '真实姿态 · 科学观测定向',
   };
+
+  /* —— 真实姿态数据（window.CASSINI_ATT，tools/bake_attitude.py 烘焙）—— */
+  let attT = null, attQ4 = null;    // ET 秒序列 + 场景系四元数 (x,y,z,w) 序列
+  let attIdx = 0;                   // 顺序回放缓存
+  if (window.CASSINI_ATT) {
+    attT = b64ToFloat64(window.CASSINI_ATT.t);
+    attQ4 = b64ToFloat32(window.CASSINI_ATT.q);
+  }
+  const _attQa = new THREE.Quaternion();
+  const _attQb = new THREE.Quaternion();
+  const _hgaV = new THREE.Vector3();
+  const _clsV = new THREE.Vector3();
+  const ATT_CLASS_TOL = 4 * Math.PI / 180;   // HUD 分类阈值
+
+  /* 覆盖内将 out 置为 t 时刻真实姿态（相邻样本 slerp）并返回 out，否则 null */
+  function attQuatAt(t, out) {
+    if (!attT || t < attT[0] || t > attT[attT.length - 1]) return null;
+    let i = attIdx;
+    if (i >= attT.length - 1 || attT[i] > t || attT[i + 1] < t) {
+      let lo = 0, hi = attT.length - 1;
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (attT[mid] <= t) lo = mid; else hi = mid;
+      }
+      i = lo;
+    }
+    attIdx = i;
+    const span = attT[i + 1] - attT[i];
+    const u = span > 0 ? (t - attT[i]) / span : 0;
+    const g = i * 4;
+    _attQa.set(attQ4[g], attQ4[g + 1], attQ4[g + 2], attQ4[g + 3]);
+    _attQb.set(attQ4[g + 4], attQ4[g + 5], attQ4[g + 6], attQ4[g + 7]);
+    return out.copy(_attQa).slerp(_attQb, THREE.MathUtils.clamp(u, 0, 1));
+  }
+
+  /* HUD 姿态标签：由真实 HGA(+Z) 指向分类（点火窗口优先标注更具体） */
+  function classifyAttitude(t, cassWorld) {
+    if (t >= ATT_SOI_BURN0 && t <= ATT_SOI_END) return 'burn';
+    _hgaV.set(0, 0, 1).applyQuaternion(_attQ);
+    const ti = registry.get('titan');
+    if (ti) {
+      _clsV.set(ti.world[0] - cassWorld[0], ti.world[1] - cassWorld[1], ti.world[2] - cassWorld[2]);
+      if (_hgaV.angleTo(_clsV) < ATT_CLASS_TOL) return 'titan';
+    }
+    const a = [0, 0, 0], b = [0, 0, 0];
+    cassiniPosAt(Math.max(trailT[0], t - 90), a);
+    cassiniPosAt(Math.min(trailT[trailN - 1], t + 90), b);
+    _clsV.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    if (_hgaV.angleTo(_clsV) < ATT_CLASS_TOL) return 'ram';
+    const e = registry.get('earth');
+    if (e) {
+      _clsV.set(e.world[0] - cassWorld[0], e.world[1] - cassWorld[1], e.world[2] - cassWorld[2]);
+      if (_hgaV.angleTo(_clsV) < ATT_CLASS_TOL) return 'earth';
+    }
+    return 'free';
+  }
+
   let attScanDone = false;
   let attSoiCross = null;       // SOI 点火中的环面穿越时刻
   let attFinaleCrossings = [];  // finale 环缝穿越 [{t, r}]（[0] = 首次俯冲，边缘对准）
   let attMode = 'earth';
-  let attQ = null;
-  let attLastWall = 0;
 
   const _attScanC = [0, 0, 0];
   const _attScanS = [0, 0, 0];
@@ -1728,18 +1958,15 @@
   }
 
   function updateCassiniAttitude(cassWorld, t) {
-    attitudeTarget(t, cassWorld);
-    if (_attV.lengthSq() < 1e-18) _attV.set(0, 0, 1); else _attV.normalize();
-    _attQ.setFromUnitVectors(Z_AXIS, _attV);
-    const now = performance.now();
-    if (!attQ) {
-      attQ = _attQ.clone();
+    if (!attQuatAt(t, _attQ)) {
+      // 数据覆盖外：任务记录启发式兜底（HGA 对地 + 三处例外窗口）
+      attitudeTarget(t, cassWorld);
+      if (_attV.lengthSq() < 1e-18) _attV.set(0, 0, 1); else _attV.normalize();
+      _attQ.setFromUnitVectors(Z_AXIS, _attV);
     } else {
-      const dt = attLastWall ? Math.min(0.1, Math.max(0, (now - attLastWall) / 1000)) : 1;
-      attQ.slerp(_attQ, 1 - Math.exp(-dt * 5));
+      attMode = classifyAttitude(t, cassWorld);
     }
-    attLastWall = now;
-    cassiniModel.quaternion.copy(attQ);
+    cassiniModel.quaternion.copy(_attQ);
   }
 
   /* SOI 相对轨迹逐帧更新（item 2/3 两级参考系）：
@@ -1776,8 +2003,8 @@
     }
     const absDim = (1 - ABS_DIM1 * bestK) * (1 - ABS_DIM2 * bestMK);
     const idxNow = trailIndexAt(t);
-    const bound2 = (() => { const b = soiWindowBound(); return b * b; })();
-    for (const [name, sp] of soiPlanets) {
+    const _swb = soiWindowBound();
+    const bound2 = _swb * _swb;    for (const [name, sp] of soiPlanets) {
       const entry = sp.entry;
       const k = kOf.get(name) || 0;
       const isMoon = !!entry.parent;
@@ -1842,7 +2069,16 @@
   const projV = new THREE.Vector3();
   const screenPts = new Map();
   let cassiniLabelEl = null;
+  let labelsVisible = true;
   function updateLabels(cassWorld) {
+    if (!labelsVisible) {
+      for (const entry of registry.values()) {
+        if (entry.labelEl) entry.labelEl.classList.add('hide');
+      }
+      if (cassiniLabelEl) cassiniLabelEl.classList.add('hide');
+      screenPts.clear();
+      return;
+    }
     const w = window.innerWidth, h = window.innerHeight;
     camera.updateMatrixWorld();
     const halfTan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
@@ -1947,6 +2183,8 @@
 
   function setCassiniLabel(el) { cassiniLabelEl = el; }
 
+  function setLabelsVisible(on) { labelsVisible = !!on; }
+
   function screenPosOf(world) {
     camera.updateMatrixWorld();
     projV.set(world[0] - camWorld.x, world[1] - camWorld.y, world[2] - camWorld.z);
@@ -1966,7 +2204,7 @@
 
   window.CassiniScene = {
     init, updatePositions, updateRender, render, updateLabels, screenPosOf, setCassiniLabel,
-    setRealisticLighting, setTrailOptions,
+    setRealisticLighting, setTrailOptions, setLabelsVisible, viewOccluded,
     get registry() { return registry; },
     get camera() { return camera; },
     get scene() { return scene; },
