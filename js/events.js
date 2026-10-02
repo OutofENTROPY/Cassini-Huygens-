@@ -60,7 +60,10 @@
       text: '第 127 次也是最后一次 Titan 近掠。此次引力弹弓将轨道近地点压入土星主环内侧，把 Cassini 送入 Grand Finale 轨道——Titan 以最后一次近掠完成了对任务终段的轨道接力。' },
     { id: 'grand_finale', utc: '2017-04-26T09:22:00Z', title: 'Grand Finale：首次环缝俯冲', body: 'saturn', zoom: 1400000,
       text: 'Cassini 首次穿越 Saturn 与主环之间约 2,000 km 宽的环缝（共 22 次），以原位测量获取行星重力场、磁场、大气成分与环粒子环境，刷新了 Saturn 系统的内域认知。' },
-    { id: 'final', utc: '2017-09-15T11:31:00Z', title: '受控再入 Saturn 大气 (Final Entry)', body: 'saturn', zoom: 900000,
+    // 终段时刻取烘焙轨迹的末段（数据止于 10:40 UTC，Cassini 贴着大气顶 ~3,300 km
+    // 俯冲）：事件卡跳转后放大到模型大小即可看到土星大气散射的真实观感；
+    // 真实 entry interface 为 11:54 UTC，数据不含该时刻，沿用会落到外推直线段
+    { id: 'final', utc: '2017-09-15T10:40:00Z', title: '受控再入 Saturn 大气 (Final Entry)', body: 'saturn', zoom: 900000,
       text: '为满足行星保护要求（避免污染可能宜居的 Enceladus 与 Titan），Cassini 以约 122,000 km/h 受控再入 Saturn 大气，天线保持对地直至烧毁。13 年环绕、294 次绕飞、约 49.2 万幅影像，任务终段结束。' },
   ];
 
