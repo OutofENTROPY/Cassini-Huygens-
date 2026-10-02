@@ -18,7 +18,7 @@
 
 - **真实数据**：NASA 历表烘焙；飞掠、发射逃逸与土星入轨的双曲线段以真实边界状态重构，与 SPICE 真值偏差 ≤2.2 万 km，任务终段延伸至 2017-09-15 坠入土星大气
 - **参考系切换**：进入行星/卫星引力影响球（SOI）时自动叠加相对该天体的轨迹，Saturn 系统内支持土星 → 卫星两级参考系
-- **飞船模型与姿态**：NASA 官方 Cassini–Huygens 模型，2004 年惠更斯分离后自动切换；高增益天线按任务阶段真实定向（默认对地通信、SOI 点火与 Grand Finale 防尘盾朝前、惠更斯下降期间指向 Titan 中继）
+- **飞船模型与姿态**：NASA 官方 Cassini–Huygens 模型，2004 年惠更斯分离后自动切换；**真实姿态回放**——来自 NASA Eyes / NAIF SPICE CK 的全程姿态四元数驱动模型定向（含滚动自由度），HGA 对地通信、SOI 防尘盾点火、惠更斯 Titan 中继、Grand Finale 环缝防护等机动均按实测序列呈现，数据覆盖外的终段再入按任务记录启发式定向
 - **渲染**：真实星表天空球与银河带、行星大气与云层、真实行星/卫星贴图、四颗气态行星星环、行星本影熄光、真实比例
 
 ## 已知问题
@@ -40,8 +40,10 @@ tools/            数据管线（Python + PowerShell，可复现全部 data/）
 ```bash
 python tools/fetch_data.py         # 从 eyes.nasa.gov 下载历表（需网络）
 python tools/bake_data.py          # 解析/重构 → data/cassini_data.js + data/moons_data.js
+python tools/fetch_attitude.py     # 下载真实姿态四元数（eyes.nasa.gov dynamo sc_cassini/quat）
+python tools/bake_attitude.py      # 转换/抽稀/校验 → data/attitude_data.js
 python tools/build_stars.py        # 星表 + 银河带 → data/stars.js
 python tools/build_textures.py     # 行星贴图 → data/textures.js
-powershell tools/fetch_models.ps1  # 下载 NASA 官方 GLB
-python tools/build_models.py       # 打包模型 → data/models.js
+powershell tools/fetch_models.ps1   # 下载 NASA Eyes 官方 Cassini 模型（gltf + bin + 贴图）
+python tools/build_models.py        # 打包为自包含 GLB → data/models.js
 ```
