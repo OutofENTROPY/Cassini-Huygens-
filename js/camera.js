@@ -10,8 +10,8 @@
     mode: 'follow',            // 'follow'（跟随 Cassini）| 'free'（全局自由）
     focusName: 'cassini',      // 当前聚焦目标（body 名或 'cassini'）
     theta: 0.9, phi: 1.05,
-    dist: 4.2e6,
-    sTheta: 0.9, sPhi: 1.05, sDist: 4.2e6,
+    dist: 0.04,
+    sTheta: 0.9, sPhi: 1.05, sDist: 0.04,
     anim: null,
     target: [0, 0, 0],
     panX: 0, panY: 0,          // 平移偏移目标值
@@ -23,7 +23,8 @@
   let lastX = 0, lastY = 0;
   let lastUpdate = 0;
 
-  const MIN_DIST = 0.02;       // 20 m
+  const MIN_DIST = 0.001;      // 1 m —— 飞船贴图细节级特写（模型跨距 ~18 m，可贴近检视
+                               // 金箔褶皱/天线表面；近裁面 1 cm，对数深度下渲染稳定）
   const MAX_DIST = 2.6e10;     // 足以纳入海王星轨道（45 亿 km）的全景
 
   const _look = new THREE.Vector3();
@@ -147,7 +148,8 @@
   function intro(durationSec) {
     state.focusName = 'cassini';
     const fromTheta = 2.35, fromPhi = 0.72, toTheta = 0.9, toPhi = 1.05;
-    const fromDist = 1.8e10, toDist = 4.2e6;
+    // 终点 40 m：全长 0.018 km 在 55° 视场下约占屏高 43%，开场落幕即为飞船全身特写
+    const fromDist = 1.8e10, toDist = 0.04;
     const dur = (durationSec || 5) * 1000;
     state.theta = toTheta; state.phi = toPhi;
     state.dist = fromDist; state.sDist = fromDist;
@@ -195,7 +197,9 @@
     let minD = MIN_DIST;
     const reg = scene.registry;
     if (state.focusName !== 'cassini' && reg.get(state.focusName)) {
-      minD = reg.get(state.focusName).radius * 1.25;
+      // 1.05R：地表上空 5% 半径（地球 ~320 km、土星云顶上 ~2900 km），
+      // 仍高于地球云顶层（+10 km）；大气为表面边缘光、无独立壳层，不穿帮
+      minD = reg.get(state.focusName).radius * 1.05;
     }
     const dEff = Math.max(state.sDist, minD);
 

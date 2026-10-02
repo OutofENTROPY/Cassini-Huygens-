@@ -7,12 +7,13 @@
 
   function fatal(msg) {
     loadingEl.classList.remove('done');
-    loadingText.textContent = '启动失败: ' + msg;
+    loadingText.textContent = '启动失败: ' + String(msg).split('\n')[0];
     loadingText.style.color = '#ff8f8f';
     console.error(msg);
-    window.__bootError = msg;
+    window.__bootError = String(msg).split('\n')[0];
+    window.__bootStack = String(msg);   // 完整堆栈（调试用，控制台可见）
   }
-  window.addEventListener('error', (e) => { fatal(e.message); });
+  window.addEventListener('error', (e) => { fatal((e.error && e.error.stack) || e.message); });
 
   try {
 
@@ -158,6 +159,15 @@
     lightBtn.setAttribute('aria-checked', String(realLight));
   });
 
+  // 天体标签显隐开关（行星 / 卫星 / Cassini 名称标签）
+  const labelsBtn = document.getElementById('labels-toggle');
+  labelsBtn.addEventListener('click', () => {
+    const on = !labelsBtn.classList.contains('on');
+    labelsBtn.classList.toggle('on', on);
+    labelsBtn.setAttribute('aria-checked', String(on));
+    scene.setLabelsVisible(on);
+  });
+
   // 轨迹显示开关（item 2）：未来轨迹显隐 + 近期/全部历史轨迹切换 + 行星/卡西尼轨迹开关
   const trailFutureBtn = document.getElementById('trail-future');
   const trailRecentBtn = document.getElementById('trail-recent');
@@ -300,6 +310,7 @@
     return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} UTC`;
   }
   function fmtDist(km) {
+    if (km < 1) return (km * 1000).toFixed(0) + ' m';   // 贴图特写级视距（MIN_DIST 1 m）
     if (km < 1e5) return km.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' km';
     if (km < 1e8) return (km / 1e4).toFixed(1) + ' 万 km';
     return (km / 1e8).toFixed(2) + ' 亿 km';
@@ -493,7 +504,7 @@
     const tt = Date.parse(dateM[1] + 'T' + (dateM[2] || '00') + ':' + (dateM[3] || '00') + ':00Z');
     tl.setNow((tt - J2000Ms) / 1000 + 65);
     tl.refresh();
-    cam.focus('cassini', { dist: 6e6, theta: 0.9, phi: 1.05, animate: false });
+    cam.focus('cassini', { dist: 0.04, theta: 0.9, phi: 1.05, animate: false });
   } else {
     cam.intro(5.2);
   }
