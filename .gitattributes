@@ -1,0 +1,11 @@
+# 语言统计修正:以下路径不计入 GitHub 语言占比 (Linguist)
+
+# 由 tools/ 下脚本生成的数据文件(bake_data.py / build_models.py 等)
+data/** linguist-generated
+textures/stars.6.json linguist-generated
+
+# 第三方库(three.js / DRACO)
+lib/** linguist-vendored
+
+# 构建、校验、调试用的工具脚本,不属于运行时项目代码
+tools/** linguist-vendored
