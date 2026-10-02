@@ -281,13 +281,25 @@ window.CassiniModel = (function () {
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uFillI = fillUniform;
       shader.uniforms.uPointOff = pointOffUniform;
-      shader.fragmentShader = 'uniform float uFillI;\nuniform float uPointOff;\n' + shader.fragmentShader
+      shader.uniforms.uShineDir = shineDirUniform;
+      shader.uniforms.uShineCol = shineColUniform;
+      shader.uniforms.uShineW = shineWUniform;
+      shader.fragmentShader = 'uniform float uFillI;\nuniform float uPointOff;\n' +
+        'uniform vec3 uShineDir;\nuniform vec3 uShineCol;\nuniform float uShineW;\n' + shader.fragmentShader
         .replace('#include <aomap_fragment>',
         `#include <aomap_fragment>
         {
           float fillW = 0.5 * dot(normal, vec3(0.0, 0.0, -1.0)) + 0.5;
           vec3 fillIrr = mix(vec3(0.102, 0.114, 0.149), vec3(0.275, 0.314, 0.416), fillW) * uFillI;
           reflectedLight.indirectDiffuse += fillIrr * RECIPROCAL_PI * diffuseColor.rgb;
+        }
+        {
+          float shineNL = dot(normal, uShineDir);
+          float shineD = clamp((shineNL + uShineW) / (1.0 + uShineW), 0.0, 1.0);
+          reflectedLight.indirectDiffuse += uShineCol * (shineD * RECIPROCAL_PI) * diffuseColor.rgb;
+          vec3 shineH = normalize(uShineDir + normalize(vViewPosition));
+          float shineS = pow(clamp(dot(normal, shineH), 0.0, 1.0), mix(160.0, 8.0, uShineW));
+          reflectedLight.indirectSpecular += uShineCol * (shineS * material.specularColor.rgb);
         }`)
         .replace('#include <lights_fragment_begin>', LF_BEGIN_NOPOINT);
     };
@@ -301,6 +313,31 @@ window.CassiniModel = (function () {
   /* 真实光照模式切换：飞船直射光改由平行光承担时，点光贡献归零（uniform 切换） */
   function setSunMode(on) {
     pointOffUniform.value = on ? 1 : 0;
+  }
+
+  /* —— 行星反照光（真实光照模式，scene.js updatePlanetShine 逐帧解算）——
+   * 近距行星反射的太阳光（土照/木照/月照）：飞船贴近行星时行星盘占据大半
+   * 天空，背阳面的主导光源即此。与补光同惯例注入材质而非场景光源——场景级
+   * 灯会泄漏到行星暗面。两项注入：
+   *   漫射 = 包裹 Lambert（wrap width = uShineW）：行星是扩展光源，张角越大
+   *     光越软——w = sin(行星角半径) = R/d，w→1（行星占满天空，Grand Finale
+   *     近土点 ≈0.95）趋于半球环境光，w→0（远距）退化为硬平行光；包裹函数
+   *     (nl+w)/(1+w) 在物理照明截止角 90°+γ（γ=行星角半径）处精确归零。
+   *   镜面 = 半程向量 Blinn 项，幂随 uShineW 展宽：金属件（金箔 F0≈金色）
+   *     映出整盘行星的暖色微光——扩展源的镜面像是行星盘的镜像，比太阳点源
+   *     的锐高光宽得多。
+   * uShineDir 为视图空间单位向量（scene.js 按相机四元数变换，同大气
+   * uSunDirView 惯例）；uShineCol = 行星色调 × 强度（与平行光同量纲，强度
+   * = SUN_INTENSITY × α_g(R/d)²k）。uniform 对象全材质共享，一次调用全船生效。 */
+  const shineDirUniform = { value: new THREE.Vector3(0, 0, -1) };
+  const shineColUniform = { value: new THREE.Vector3(0, 0, 0) };
+  const shineWUniform = { value: 0 };
+
+  function setShine(dirView, col, w) {
+    if (dirView) shineDirUniform.value.copy(dirView);
+    if (col) shineColUniform.value.copy(col);
+    else shineColUniform.value.set(0, 0, 0);
+    shineWUniform.value = w || 0;
   }
 
   /* 包一层：体轴旋转 + 缩放（补光由 enhanceMaterials 注入材质，见 injectFill） */
@@ -382,5 +419,5 @@ window.CassiniModel = (function () {
     pending.then(done);
   }
 
-  return { load, Q_GLB, setEclipse, setFillLight, setSunMode, setEnvironment };
+  return { load, Q_GLB, setEclipse, setFillLight, setSunMode, setShine, setEnvironment };
 })();
