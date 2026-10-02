@@ -38,3 +38,6 @@ cdk.out/
 eggs/
 pip-wheel-metadata/
 wheels/
+
+# build_textures.py 打包重编码中间产物
+textures/pack_*
