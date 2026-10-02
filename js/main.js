@@ -79,14 +79,14 @@
   });
   tl.addEventMarks(EVENTS, pickEvent);
 
-  // 事件卡：仅可收起（⌄，折入收纳按钮，可再次展开）
-  // 桌面默认展开，移动端默认收进左上角按钮（呼吸闪烁提示）
+  // 事件卡：左上角通知按钮（◉ 右侧，手机 / 桌面一致）点按展开 / 再点收起（按钮不消失），
+  // 事件卡右上角 ⌄ 亦可收起；点击任务事件时卡片默认收起、按钮呼吸闪烁提示
   const eventCard = document.getElementById('event-card');
   document.getElementById('event-fold').addEventListener('click', () => {
     document.body.classList.add('event-folded');
   });
   document.getElementById('event-fab').addEventListener('click', () => {
-    document.body.classList.remove('event-folded');
+    document.body.classList.toggle('event-folded');
   });
 
   // 视图按钮（仅视角切换；真实光照是独立开关，不触发镜头移动）
@@ -296,7 +296,7 @@
     [et('2008-07-01T00:00:00Z'), 'Saturn 环绕 · 延展任务一 (Equinox)'],
     [et('2010-10-01T00:00:00Z'), 'Saturn 环绕 · 延展任务二 (Solstice)'],
     [et('2017-04-26T00:00:00Z'), 'Grand Finale · 22 次环缝俯冲'],
-    [et('2017-09-15T11:31:00Z'), '任务终段 · 受控再入 Saturn 大气'],
+    [et('2017-09-15T10:40:00Z'), '任务终段 · 受控再入 Saturn 大气'],
   ];
   function phaseAt(t) {
     let label = PHASES[0][1];
@@ -354,8 +354,8 @@
     document.getElementById('event-text').textContent = ev.text;
     eventCard.classList.remove('hidden');
     document.body.classList.add('event-open');
-    // 每次点开任务事件：移动端默认收进左上角按钮，桌面默认展开
-    document.body.classList.toggle('event-folded', mqMobile.matches);
+    // 每次点开任务事件：详情卡默认收起，左上角通知按钮（◉ 右侧）弹出呼吸提示，点按展开 / 再点收起
+    document.body.classList.add('event-folded');
   }
 
   /* 展开事件列表 / 跳转事件时，让列表滚动定位到当前事件（即时定位，展开即到位） */

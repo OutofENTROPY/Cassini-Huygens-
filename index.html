@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Cassini–Huygens 历史飞行数据 · 3D 轨迹可视化 (1997–2017)</title>
-<link rel="stylesheet" href="css/style.css?v=2026208">
+<link rel="stylesheet" href="css/style.css?v=2026209">
 </head>
 <body>
 <div id="app">
@@ -74,10 +74,10 @@
     <button id="hud-toggle" title="状态信息" aria-label="显示/隐藏状态信息">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>
     </button>
-    <!-- 任务事件卡收纳按钮：移动端在 ◉ 下方（呼吸闪烁），桌面折叠后出现在事件卡原位 -->
-    <button id="event-fab" title="任务事件卡" aria-label="展开/收起任务事件卡">
+    <!-- 任务事件通知按钮：点击任务事件后弹出，固定在 ◉ 详情按钮右侧（手机 / 桌面一致），
+         点按展开任务事件卡、再点收起，按钮不消失 -->
+    <button id="event-fab" title="任务事件卡：点击展开 / 收起" aria-label="展开/收起任务事件卡">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-      <span>任务事件</span>
     </button>
     <div id="hud">
       <div id="hud-date">1997-10-15 08:43 UTC</div>
@@ -125,7 +125,7 @@
         <li><b>右键拖动</b> — 平移视野中心</li>
         <li><b>点击行星 / 卫星标签</b> — 平滑过渡聚焦该天体</li>
         <li><b>点击时间轴圆点 / 事件列表</b> — 跳转事件并聚焦 Cassini</li>
-        <li><b>事件卡右上角 ⌄</b> — 收起事件卡（左下角「任务事件」按钮可再次展开）</li>
+        <li><b>左上角 🔔（◉ 右侧）</b> — 点击任务事件后弹出：点按展开事件卡、再点收起（事件卡右上角 ⌄ 亦可收起）</li>
         <li><b>时间条拖动</b> — 任意时刻回放（条左半为倒退半程，右半为快进半程）</li>
         <li><b>空格</b> — 播放 / 暂停</li>
         <li><b>时间条上方速率滑块</b> — 时间流速（中点保持，左=倒放，右=正放）</li>
@@ -141,7 +141,7 @@
         <li><b>时间条拖动</b> — 任意时刻回放（条左半为倒退半程，右半为快进半程）</li>
         <li><b>时间条上方速率滑块</b> — 时间流速（中点保持，左=倒放，右=正放）</li>
         <li><b>左上角 ◉</b> — 展开 / 收起日期、阶段与距离速度状态卡</li>
-        <li><b>左上角铃铛（呼吸闪烁）</b> — 点开任务事件后详情卡收纳于此，点按展开 / 收起</li>
+        <li><b>左上角铃铛（◉ 右侧，呼吸闪烁）</b> — 点开任务事件后详情卡收纳于此，点按展开 / 再点收起</li>
         <li><b>右上角 ⛶ / ⚙</b> — 全屏显示；全局视角、真实光照、天体标签显隐、行星 / Cassini 轨迹开关等设置</li>
       </ul>
       <p>行星尺寸与轨道距离均为真实比例；Cassini 进入行星引力影响球（Venus / Earth / Jupiter / Saturn）时，自动叠加显示相对该行星的轨迹，两条轨迹的交点即 Cassini 实际位置，日心轨迹同步降低亮度；在土星系统内进一步接近卫星（Titan / Enceladus / Rhea / Dione / Iapetus 等）时，日心与土星相对轨迹再降亮度并淡入相对卫星的二级轨迹；离开影响球后自动淡出恢复。点击 Huygens 标签或事件卡可跟随惠更斯探测器（2005-01-14 着陆 Titan、失联后自动移除实体）。飞船模型为真实尺寸（缩小视角时随之缩至真实大小），高增益天线按 NASA 任务记录的真实姿态状态实时定向：默认对地通信，土星轨道切入（SOI）与 Grand Finale 环缝穿越期间转为前向防尘盾（&quot;HGA to RAM&quot;），惠更斯下降期间指向 Titan 中继，终段再入保持对地直至烧毁。</p>
@@ -197,13 +197,13 @@
 <script src="data/moons_data.js?v=2026203"></script>
 <script src="data/models.js?v=2026303"></script>
 <script src="data/attitude_data.js?v=2026301"></script>
-<script src="js/events.js?v=2026201"></script>
+<script src="js/events.js?v=2026307"></script>
 <script src="js/textures.js?v=2026103"></script>
 <script src="js/huygens.js?v=2026201"></script>
 <script src="js/cassini_model.js?v=2026305"></script>
-<script src="js/scene.js?v=2026306"></script>
+<script src="js/scene.js?v=2026312"></script>
 <script src="js/camera.js?v=2026276"></script>
 <script src="js/timeline.js?v=2026124"></script>
-<script src="js/main.js?v=2026303"></script>
+<script src="js/main.js?v=2026308"></script>
 </body>
 </html>

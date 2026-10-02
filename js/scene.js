@@ -179,25 +179,47 @@
   // ---------- bodies ----------
   const BODIES = [
     { name: 'sun', radius: 696000, tex: 'proc:sun', emissive: true, label: 'Sun' },
-    { name: 'mercury', radius: 2439.7, tex: 'mercury', label: 'Mercury' },
+    { name: 'mercury', radius: 2439.7, tex: 'mercury', label: 'Mercury', flatten: 0.0009 },
     { name: 'venus', radius: 6051.8, tex: 'venus', label: 'Venus', glow: '#e8d8a8', atmo: { color: 0xe8d8a0, intensity: 0.55, power: 2.6 } },
-    { name: 'earth', radius: 6371, tex: 'earth', label: 'Earth', clouds: true, glow: '#6fa8ff', atmo: { color: 0x5f9bff, intensity: 0.9, power: 3.0 } },
-    { name: 'mars', radius: 3389.5, tex: 'mars', label: 'Mars', atmo: { color: 0xc08060, intensity: 0.3, power: 3.2 } },
-    { name: 'jupiter', radius: 69911, tex: 'jupiter', label: 'Jupiter', glow: '#d8c0a0', rings: true },
-    { name: 'saturn', radius: 58232, tex: 'saturn', label: 'Saturn', rings: true, glow: '#e8d8a8' },
-    { name: 'uranus', radius: 25362, tex: 'uranus', label: 'Uranus', rings: true },
-    { name: 'neptune', radius: 24622, tex: 'neptune', label: 'Neptune', rings: true },
-    { name: 'moon', radius: 1737.4, tex: 'moon', label: 'Moon' },
-    { name: 'titan', radius: 2574.7, tex: 'proc:titan', label: 'Titan', atmo: { color: 0xd89550, intensity: 0.65, power: 2.4 } },
-    { name: 'enceladus', radius: 252.1, tex: 'proc:enceladus', label: 'Enceladus' },
+    { name: 'earth', radius: 6371, tex: 'earth', label: 'Earth', clouds: true, glow: '#6fa8ff',
+      // NASA Eyes AtmosphereComponent 参数：色 (0.841,1.047,1.5) HDR 蓝、日落 (1,.5,0)×1.2；
+      // halo = 盘外大气辉光壳；夜面城市灯光 earthNight（NASA Eyes 夜贴图）；海洋镜面见 Phong 材质。
+      // power 3.4 让蓝晕铺进盘面内侧 + wash 昼面常数薄雾（整体淡蓝、NASA Eyes
+      // 观感）——只靠 rim 会留下饱和深蓝的海洋中部
+      atmo: { color: [0.841, 1.047, 1.5], intensity: 0.62, power: 3.4, wash: 0.12,
+              sunset: { color: [1.0, 0.5, 0.0], intensity: 1.2 },
+              // 城市灯光压到真实观感：夜贴图城市核心接近纯白，1.25 会把夜面
+              // 照成成片亮斑——从太空看城市只是暗弱的琥珀色光点簇
+              night: { tex: 'earthNight', intensity: 0.5 },
+              halo: { color: [0.42, 0.66, 1.0], intensity: 0.9 } },
+      flatten: 0.0034 },
+    { name: 'mars', radius: 3389.5, tex: 'mars', label: 'Mars', atmo: { color: 0xc08060, intensity: 0.3, power: 3.2 }, flatten: 0.0059 },
+    { name: 'jupiter', radius: 69911, tex: 'jupiter', label: 'Jupiter', glow: '#d8c0a0', rings: true,
+      // 真实扁率：(赤道 71492 − 极 66854) / 71492 ≈ 0.0649——快速自转的
+      // 气态巨行星为扁椭球，压极轴、赤道半径不变
+      flatten: 0.0649 },
+    { name: 'saturn', radius: 58232, tex: 'saturn', label: 'Saturn', rings: true, glow: '#e8d8a8',
+      // 大气散射（Grand Finale 坠入段放大到模型大小时可见）：暖金边缘光 + 盘外
+      // 辉光壳——卡西尼实拍土星 limb 为奶油金霾，强度/宽度取 Venus 与 Titan 之间
+      atmo: { color: 0xd8b878, intensity: 0.5, power: 2.6, wash: 0.04,
+              halo: { color: 0xf0e2b6, intensity: 0.85 } },
+      // 扁率 0.098 = (60268−54364)/60268——行星之最；环仍在赤道面，不受 Y 压缩影响
+      flatten: 0.0980 },
+    { name: 'uranus', radius: 25362, tex: 'uranus', label: 'Uranus', rings: true, flatten: 0.0229 },
+    { name: 'neptune', radius: 24622, tex: 'neptune', label: 'Neptune', rings: true, flatten: 0.0171 },
+    // 卫星扁率 = (a−c)/a，三轴 limb 拟合取 Thomas (2010, Icarus 208)；金星/太阳 f≈0 不设
+    { name: 'moon', radius: 1737.4, tex: 'moon', label: 'Moon', flatten: 0.0012 },
+    { name: 'titan', radius: 2574.7, tex: 'proc:titan', label: 'Titan', atmo: { color: 0xd89550, intensity: 0.65, power: 2.4 }, flatten: 0.0011 },
+    { name: 'enceladus', radius: 252.1, tex: 'proc:enceladus', label: 'Enceladus', flatten: 0.228 },
     // Iapetus：NASA Cassini ISS 真实镶嵌（替换有误的程序化贴图）；texOffset 把暗区
     // （Cassini Regio）质心对齐到轨道前导半球——潮汐锁定下本地 +X（u=0.5）指向
     // Saturn，顺行卫星前导方向 = 本地 +Z = u 0.25；原镶嵌暗区质心 u≈0.2523
-    { name: 'iapetus', radius: 734.5, tex: 'iapetus', texOffset: 0.0023, label: 'Iapetus' },
-    { name: 'rhea', radius: 763.8, tex: 'proc:rhea', label: 'Rhea' },
-    { name: 'dione', radius: 561.4, tex: 'proc:dione', label: 'Dione' },
-    { name: 'tethys', radius: 531.1, tex: 'proc:tethys', label: 'Tethys' },
-    { name: 'mimas', radius: 198.2, tex: 'proc:mimas', label: 'Mimas' },
+    // Iapetus：早期快速自转减速遗留的永久变形，(746−712)/746 ≈ 0.046
+    { name: 'iapetus', radius: 734.5, tex: 'iapetus', texOffset: 0.0023, label: 'Iapetus', flatten: 0.046 },
+    { name: 'rhea', radius: 763.8, tex: 'proc:rhea', label: 'Rhea', flatten: 0.0013 },
+    { name: 'dione', radius: 561.4, tex: 'proc:dione', label: 'Dione', flatten: 0.003 },
+    { name: 'tethys', radius: 531.1, tex: 'proc:tethys', label: 'Tethys', flatten: 0.048 },
+    { name: 'mimas', radius: 198.2, tex: 'proc:mimas', label: 'Mimas', flatten: 0.083 },
   ];
 
   // 轴倾角 [tilt°, node°]（tiltGroup 定向，欧拉序 YXZ：先绕 X 倾斜、再绕 Y 转到
@@ -516,6 +538,8 @@
       shipSunLight.intensity = on ? SUN_INTENSITY : 0;
       forceShadowRefresh = true;
     }
+    // 行星反照光仅真实模式逐帧解算（材质注入项，关闭即置零）
+    if (!on && window.CassiniModel) window.CassiniModel.setShine(null, null, 0);
     if (window.CassiniModel) window.CassiniModel.setSunMode(on);
   }
 
@@ -664,19 +688,6 @@
     return c;
   }
 
-  function glowTexture(color) {
-    const c = document.createElement('canvas');
-    c.width = c.height = 128;
-    const ctx = c.getContext('2d');
-    const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
-    g.addColorStop(0, color + 'cc');
-    g.addColorStop(0.35, color + '44');
-    g.addColorStop(1, color + '00');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 128, 128);
-    return new THREE.CanvasTexture(c);
-  }
-
   /* 太阳光晕壳层（NASA Eyes 风格）：按“视线到日心的瞄准距离 b”（日面半径归一）
    * 计算径向衰减，球面几何在任意视距下稳定（无广告牌近裁剪切边），日面圆盘
    * 自然遮挡中心亮核。双层剖面（mode）：
@@ -740,6 +751,104 @@
     });
   }
 
+  /* 行星大气辉光壳（NASA Eyes 同款盘外光晕 + 大气内视地平雾带）：加色壳层。
+   * 外视（相机远于大气）：光强按「瞄准距离 b」（视线到星心最近距 / 该方向
+   * 星体椭球半径）剖面化——盘缘 b=1 最亮、向外指数衰减，壳缘窗口归零无硬边。
+   * 内视（Grand Finale 坠入段，相机贴近/进入大气）：指数剖面会退化成满天天纱，
+   * 改按「视线穿过大气层（星表→壳顶）的前向弦长」发光——地平线方向弦长最长
+   * 成亮带、天顶方向趋于零星空通透，即真实大气散射观感；星表以下（坠入段
+   * 末端）俯视仍是深厚雾霾、仰视留出天空，两种剖面按相机高度平滑交接。
+   * 扁椭球（土星 f=0.098 等）：b/弦长按视线方向椭球半径归一（r(nrm) =
+   * a / √(nh² + nv²/(1−f)²)，nv = nrm·极轴），壳网格同扁率压 Y——光晕与星表
+   * 间距全向恒定，极区不悬浮。昼侧亮、夜侧暗（太阳在世界原点，无需逐帧
+   * uniform）。含 logdepthbuf chunk：对数深度缓冲下与行星盘面正确做深度判定。 */
+  function atmoHaloShellMaterial(opt) {
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        uR: { value: opt.rBody },
+        uI: { value: opt.intensity },
+        uColor: { value: Array.isArray(opt.color)
+          ? new THREE.Color(opt.color[0], opt.color[1], opt.color[2])
+          : new THREE.Color(opt.color) },
+        uEdge: { value: opt.shell },
+        uFlat: { value: opt.flat || 0 },
+        uPolar: { value: opt.polar || new THREE.Vector3(0, 1, 0) },
+        uSunPos: { value: new THREE.Vector3() },
+      },
+      vertexShader: `
+        varying vec3 vW; varying vec3 vBodyC;
+        #include <common>
+        #include <logdepthbuf_pars_vertex>
+        void main() {
+          vW = (modelMatrix * vec4(position, 1.0)).xyz;
+          vBodyC = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+          gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0);
+          #include <logdepthbuf_vertex>
+        }`,
+      fragmentShader: `
+        uniform float uR; uniform float uI; uniform vec3 uColor;
+        uniform float uEdge; uniform float uFlat; uniform vec3 uPolar;
+        uniform vec3 uSunPos;
+        varying vec3 vW; varying vec3 vBodyC;
+        #include <common>
+        #include <logdepthbuf_pars_fragment>
+        float sphR(vec3 n, float ic) {          // 椭球沿方向 n 的半径
+          float nv = clamp(dot(n, uPolar), -1.0, 1.0);
+          return uR / sqrt((1.0 - nv * nv) + nv * nv * ic * ic);
+        }
+        void main() {
+          #include <logdepthbuf_fragment>
+          vec3 D = normalize(vW - cameraPosition);
+          vec3 oc = vBodyC - cameraPosition;
+          float dCam = max(length(oc), 1e-8);
+          float tP = dot(oc, D);
+          vec3 Pv = oc - D * tP;                       // 最近点向量
+          float rc = max(length(Pv), 1e-8);
+          vec3 nrm = Pv / rc;                           // 最近点方向
+          float ic = 1.0 / (1.0 - uFlat);
+          float rDir = sphR(nrm, ic);
+          float dN = dCam / sphR(oc / dCam, ic);        // 相机高度（星表=1）
+          float b = rc / rDir;                          // 瞄准距离（星表=1）
+          float s = max(b - 1.0, 0.0);
+          // 外视剖面：真实 limb 霾是薄层（可见厚度 ~1–2% 行星半径），取 0.5% /
+          // 1.4%R 两个指数衰减尺度；旧 8.0/2.0 的尺度在 4.5% 壳内几乎不衰减，
+          // 整段被 win 窗口硬切，观感过厚过亮。窗口起点必须是 1.0——取
+          // uEdge*0.55 会在峰值处先行衰减 40 倍
+          float outG = smoothstep(1.03, 1.20, dN);
+          float gOut = (0.85 * exp(-s * 200.0) + 0.30 * exp(-s * 70.0)) * outG;
+          float win = 1.0 - smoothstep(1.0, uEdge, b);
+          // 内视地平雾带：视线前方穿过大气层（星表→壳顶）的弦长 × 指数密度
+          // （标高 uH≈0.012R）——地平线切向弦长最长且贴近星表（亮带），视线
+          // 抬高后弦段中点高度上升、密度骤降，天空快速转黑，贴近真实观感
+          float rEdge = uEdge * rDir;
+          float xOut = sqrt(max(rEdge * rEdge - rc * rc, 0.0));
+          float xIn  = sqrt(max(rDir  * rDir  - rc * rc, 0.0));
+          float sCam = sqrt(max(dCam * dCam - rc * rc, 0.0));
+          float tCam = dot(D, normalize(oc)) > 0.0 ? sCam : -sCam; // 最近点在前为正
+          float tA = max(tCam - xIn, 0.0);
+          float chordSeg = max(tCam + xOut - tA, 0.0);
+          float rMid = sqrt(rc * rc + (tCam - 0.5 * (tA + tCam + xOut)) * (tCam - 0.5 * (tA + tCam + xOut)));
+          float chord = chordSeg / rEdge * exp(-(rMid / rDir - 1.0) / 0.006);
+          float inG = 1.0 - smoothstep(1.06, 1.26, dN);
+          // 内视增益（8）配标高 0.006R（~350 km，介于真实 ~80 km 与观感之间）：
+          // 贴轮廓掠射线的 rMid 贴近星表、密度项≈1，弦长 0.3R——增益过大时
+          // 整条地平带饱和成白墙；标高减半把亮带收紧到轮廓附近，天空只剩
+          // 「稍微染色」（ShaderMaterial 无 encodings_fragment，输出为原始线性值）
+          float g = uI * (gOut * win + inG * 8.0 * chord);
+          // 昼夜调制：片段在屏面上相对盘心的方向 = -nrm（nrm 指向中心，即从
+          // 盘缘指向盘心）——昼侧亮弧必须落在太阳一侧。场景为相机相对系，
+          // 太阳位姿逐帧注入；散射有 wrap（夜侧留 0.42 底），避免晨昏断崖
+          float day = clamp(-dot(nrm, normalize(uSunPos - vBodyC)) * 1.1 + 0.42, 0.0, 1.0);
+          gl_FragColor = vec4(uColor * max(g * day, 0.0), 1.0);
+        }`,
+      side: THREE.BackSide,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: THREE.AdditiveBlending,
+    });
+  }
+
   /* 标记纹理用 16px 小图：几像素的 sprite 采样稀疏，64px 大图的白色亮核
    * 会被完全跳过（峰值只有 ~0.93），小图才能让最小档位的标记保持全亮核心。 */
   function markerTexture() {
@@ -793,13 +902,25 @@
   /* 大气边缘光（item 5）：菲涅尔边缘光直接注入行星表面材质。
    * 不再使用独立外壳网格——旧外壳是独立 ShaderMaterial 且未含 logdepthbuf
    * chunk，在 logarithmicDepthBuffer 下深度判定与行星表面不一致，会在圆面上
-   * 错误叠加出硬边大气罩；并入表面后与表面光照同一管线，昼夜相位天然一致。 */
+   * 错误叠加出硬边大气罩；并入表面后与表面光照同一管线，昼夜相位天然一致。
+   * 可选扩展（NASA Eyes 同款显示效果，参数取自其 app.js AtmosphereComponent）：
+   *   sunset { color, intensity } — 晨昏线日落色（地球 (1,.5,0)×1.2）
+   *   night  { tex, intensity }   — 夜面城市灯光贴图，按太阳高度角淡入 */
+  const BLACK_TEX = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+  BLACK_TEX.needsUpdate = true;
+
   function applyAtmoRim(mat, def) {
+    const col = (c) => Array.isArray(c) ? new THREE.Color(c[0], c[1], c[2]) : new THREE.Color(c);
     mat.userData.atmoU = {
-      uAtmoColor: { value: new THREE.Color(def.color) },
+      uAtmoColor: { value: col(def.color) },
       uAtmoIntensity: { value: def.intensity },
       uAtmoPower: { value: def.power },
       uSunDirView: { value: new THREE.Vector3(0, 0, 1) },
+      uNightMap: { value: def.night ? loadTex(def.night.tex) : BLACK_TEX },
+      uNightIntensity: { value: def.night ? def.night.intensity : 0 },
+      uSunsetColor: { value: col(def.sunset ? def.sunset.color : 0) },
+      uSunsetIntensity: { value: def.sunset ? def.sunset.intensity : 0 },
+      uAtmoWash: { value: def.wash || 0 },
     };
     mat.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, mat.userData.atmoU);
@@ -813,14 +934,23 @@
           vAtmoV = normalize(-atmoMv.xyz);`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>',
-          '#include <common>\nvarying vec3 vAtmoN;\nvarying vec3 vAtmoV;\nuniform vec3 uAtmoColor;\nuniform vec3 uSunDirView;\nuniform float uAtmoIntensity;\nuniform float uAtmoPower;')
+          '#include <common>\nvarying vec3 vAtmoN;\nvarying vec3 vAtmoV;\nuniform vec3 uAtmoColor;\nuniform vec3 uSunDirView;\nuniform float uAtmoIntensity;\nuniform float uAtmoPower;\nuniform float uAtmoWash;\nuniform sampler2D uNightMap;\nuniform float uNightIntensity;\nuniform vec3 uSunsetColor;\nuniform float uSunsetIntensity;')
         .replace('#include <dithering_fragment>', `
           #include <dithering_fragment>
           {
             vec3 N = normalize(vAtmoN), V = normalize(vAtmoV);
+            vec3 S = normalize(uSunDirView);
+            float nds = dot(N, S);
             float rim = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), uAtmoPower);
-            float day = clamp(dot(N, normalize(uSunDirView)) * 1.4 + 0.25, 0.0, 1.0);
-            gl_FragColor.rgb += uAtmoColor * (rim * uAtmoIntensity * day);
+            float day = clamp(nds * 1.4 + 0.25, 0.0, 1.0);
+            // 夜面城市灯光：越过晨昏线（法线背向太阳）淡入
+            float nightF = 1.0 - smoothstep(-0.14, 0.06, nds);
+            gl_FragColor.rgb += texture2D(uNightMap, vUv).rgb * (uNightIntensity * nightF);
+            // 边缘光昼侧着大气色，晨昏线附近混入日落色
+            float sunset = uSunsetIntensity * pow(clamp(1.0 - abs(nds), 0.0, 1.0), 3.5);
+            vec3 atmo = mix(uAtmoColor, uSunsetColor, clamp(sunset, 0.0, 1.0));
+            // wash：昼面常数薄雾——把整盘往大气色抬（淡蓝观感）；rim 只够到盘缘
+            gl_FragColor.rgb += atmo * ((rim * uAtmoIntensity + uAtmoWash) * day);
           }`);
     };
     mat.customProgramCacheKey = () => 'atmo-rim';
@@ -856,15 +986,15 @@
       (prevKey ? prevKey.call(mat) : '') + '+nodir' + (tag || '');
   }
 
-  /* —— 气态行星环参数（item 4）——
-   * 内外半径（km，真实值）与纹理：土星用 Solar System Scope 烘焙贴图；
-   * 木/天/海用程序化径向纹理（js/textures.js），alpha 按真实光深：
-   * 木星环尘埃极淡（主环 alpha≈0.28）、天王星窄环炭黑、海王星环极淡
-   * （Adams 环带 5 条真实亮弧）。 */
+  /* —— 气态行星环参数 ——
+   * 内外半径（km）与纹理：土星/天王星用 NASA Eyes 官方环径向条带
+   * （sprites/saturn_rings_top.png、uranus_rings.png，u=0 内缘），半径取其
+   * RingsComponent 设定值；木星环尘埃极淡、海王星 Adams 弧段方位需与真实
+   * 经度对齐——两者保留程序化径向纹理（js/textures.js，alpha 按真实光深）。 */
   const RINGS = {
     jupiter: { inner: 92000, outer: 226000, tex: 'proc:ringJupiter' },
-    saturn:  { inner: 74500, outer: 140220, tex: 'ring' },
-    uranus:  { inner: 37500, outer: 52500, tex: 'proc:ringUranus' },
+    saturn:  { inner: 74270.58, outer: 140478.92, tex: 'saturnRing' },
+    uranus:  { inner: 26840, outer: 103000, tex: 'uranusRing' },
     neptune: { inner: 40000, outer: 64000, tex: 'proc:ringNeptune' },
   };
 
@@ -995,6 +1125,17 @@
                 }`);
           };
         }
+      } else if (def.name === 'earth') {
+        // NASA Eyes 同款：Phong + 海洋镜面贴图（specular 白=海面反光，黑=陆地）
+        const spec = loadTex('earthSpecular', aniso);
+        mat = new THREE.MeshPhongMaterial({
+          map: tex, specularMap: spec,
+          // 海洋镜面压到 ~3% 反光 + 窄高光（shininess 180）：只留日下点一点
+          // 极淡耀斑，背光视角不再出现成片白斑
+          specular: new THREE.Color(0x060a10), shininess: 180,
+        });
+        applyAtmoRim(mat, def.atmo);
+        entry.atmoMat = mat;
       } else {
         mat = new THREE.MeshLambertMaterial({ map: tex });
         // 大气边缘光并入表面材质（地球/金星/火星/土卫六；不再使用独立大气壳）
@@ -1004,7 +1145,9 @@
         }
       }
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.scale.setScalar(def.radius);
+      // flatten：扁椭球（木星等气态巨行星）——Y 压极轴，赤道半径 = def.radius
+      const fl = def.flatten || 0;
+      mesh.scale.set(def.radius, def.radius * (1 - fl), def.radius);
       tiltGroup.add(mesh);
 
       if (def.clouds) {
@@ -1015,7 +1158,8 @@
         const ct = loadTex('earthClouds', aniso);
         const cm = new THREE.MeshLambertMaterial({ map: ct, transparent: true, opacity: 0.9, depthWrite: false });
         const clouds = new THREE.Mesh(geo, cm);
-        clouds.scale.setScalar(def.radius + 10);
+        // 云层壳随扁率同压 Y 轴，极区与地表仍保持 ~10 km 间距
+        clouds.scale.set(def.radius + 10, (def.radius + 10) * (1 - fl), def.radius + 10);
         tiltGroup.add(clouds);
         entry.clouds = clouds;
       }
@@ -1043,17 +1187,30 @@
         group.add(glowOuter);
         entry.glowShell = glowInner;
         entry.glowShellOuter = glowOuter;
-      } else if (def.glow) {
-        const gm = new THREE.MeshBasicMaterial({
-          map: glowTexture(def.glow),
-          transparent: true, depthWrite: false,
-          blending: THREE.AdditiveBlending, side: THREE.DoubleSide, opacity: 0.75,
-        });
-        const glow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), gm);
-        glow.scale.setScalar(def.radius * 4.2);
-        glow.renderOrder = 2;
-        group.add(glow);
-        entry.glow = glow;
+      }
+
+      // 大气辉光壳（NASA Eyes 盘外光晕，壳高 = 大气层高度 1.045R）：旧行星光晕
+      // 是 4.2R 广告牌高斯贴片，晕圈高出大气数倍且近距有切边——统一改为与行星
+      // 同扁率的薄壳（光晕高度即大气高度，极区不悬浮），def.glow 转为壳色来源
+      const haloDef = def.atmo && def.atmo.halo;
+      if (haloDef || def.glow) {
+        const shell = 1.045;
+        const halo = new THREE.Mesh(
+          new THREE.SphereGeometry(1, 64, 32),
+          atmoHaloShellMaterial({
+            rBody: def.radius, shell,
+            color: haloDef ? haloDef.color : def.glow,
+            intensity: haloDef ? haloDef.intensity : 0.95,
+            flat: fl,
+            polar: new THREE.Vector3(0, 1, 0).applyQuaternion(tiltGroup.quaternion).normalize(),
+          }));
+        halo.scale.set(def.radius * shell, def.radius * shell * (1 - fl), def.radius * shell);
+        // 渲染顺序置于星空(-9)之后、一切透明体（环/轨迹/标签，0+）之前：
+        // 辉光壳是加色混合，若在环之后绘制会把大气亮弧叠印到环面上——
+        // 环在后绘制时按自身 alpha 正常混合，隔着不透明环段看不到亮弧
+        halo.renderOrder = -1;
+        tiltGroup.add(halo);
+        entry.haloShell = halo;
       }
 
       // —— 行星环系统（item 4：木/土/天/海四颗气态行星，真实半径与真实透明度）——
@@ -1079,7 +1236,12 @@
           uPlanetR: { value: def.radius },
           uRingShadowDepth: { value: 1.0 },
         };
-        mat.onBeforeCompile = (shader) => {
+        // 链式补丁： Saturn 现带大气边缘光（applyAtmoRim 已占 onBeforeCompile /
+        // customProgramCacheKey），须先执行前序注入再叠加环影，缓存键同步串联
+        const prevCompile = mat.onBeforeCompile;
+        const prevCacheKey = mat.customProgramCacheKey;
+        mat.onBeforeCompile = (shader, r) => {
+          if (prevCompile) prevCompile(shader, r);
           Object.assign(shader.uniforms, shU);
           shader.vertexShader = 'varying vec3 vWPos;\n' + shader.vertexShader.replace(
             '#include <begin_vertex>',
@@ -1112,7 +1274,9 @@
               }`);
         };
         mat.userData.shadowU = shU;
-        mat.customProgramCacheKey = () => 'saturn-ringshadow';   // 补丁链变体标记（防 program 缓存错配）
+        // 补丁链变体标记（防 program 缓存错配）
+        mat.customProgramCacheKey = () =>
+          (prevCacheKey ? prevCacheKey.call(mat) : '') + '+saturn-ringshadow';
       }
 
       entry.mesh = mesh;
@@ -1506,13 +1670,19 @@
       }
     }
 
-    // ---- 大气边缘昼向 uniform（已并入表面材质） ----
+    // ---- 大气边缘昼向 uniform（已并入表面材质）+ 辉光壳太阳位置 ----
     _camQInv.copy(camera.quaternion).invert();
     for (const [name, entry] of registry) {
-      if (name === '__sunLight' || !entry.atmoMat) continue;
-      // 太阳（原点）→ 天体 方向，转到视图空间
-      _sd.set(-entry.world[0], -entry.world[1], -entry.world[2]).applyQuaternion(_camQInv);
-      entry.atmoMat.userData.atmoU.uSunDirView.value.copy(_sd);
+      if (name === '__sunLight') continue;
+      if (entry.atmoMat) {
+        // 太阳（原点）→ 天体 方向，转到视图空间
+        _sd.set(-entry.world[0], -entry.world[1], -entry.world[2]).applyQuaternion(_camQInv);
+        entry.atmoMat.userData.atmoU.uSunDirView.value.copy(_sd);
+      }
+      if (entry.haloShell) {
+        // 场景为相机相对系：太阳世界位姿 = -camWorld（辉光壳昼夜调制用）
+        entry.haloShell.material.uniforms.uSunPos.value.set(-camWorld.x, -camWorld.y, -camWorld.z);
+      }
     }
 
     // ---- 轨道线与行星严格重合（item 8）----
@@ -1596,6 +1766,9 @@
         if (hw) fH = eclipseFactor(hw);
       }
       window.CassiniModel.setEclipse(fC, fH);
+      // 行星反照光：不受掩食因子直接调制——采样面元自带局地光照权重，
+      // 飞船进入本影时看到的正是行星夜面，反照光随采样变暗自然熄灭
+      updatePlanetShine();
     }
 
     // ---- Cassini marker + model（真实尺寸缩放 + 真实姿态）----
@@ -1662,8 +1835,7 @@
     leaderLine.geometry.attributes.position.needsUpdate = true;
     leaderLine.visible = cassTrail && idxNow < trailN - 1 && trailK > 0.01;
 
-    // glows face camera, fade when close; mini markers for sub-pixel bodies
-    const camQ = camera.quaternion;
+    // glows fade when close; mini markers for sub-pixel bodies
     for (const [name, entry] of registry) {
       if (name === '__sunLight') continue;
       const d = Math.hypot(
@@ -1681,13 +1853,6 @@
         entry.surfMat.color.setScalar(dim);
         if (entry.clouds) entry.clouds.material.color.setScalar(dim);
       }
-      if (entry.glow) {
-        // 行星光晕：朝向相机，靠近即淡出避免遮蔽（太阳光晕已改为壳层，无此需求）
-        const k = Math.min(1, Math.max(0, (d / (entry.radius * 14)) - 0.35));
-        entry.glow.quaternion.copy(camQ);
-        entry.glow.material.opacity = 0.9 * k;
-        entry.glow.visible = k > 0.01;
-      }
       if (entry.glowShell) {
         // 相机进入光晕壳内时淡出，避免暖纱遮蔽星空（内外壳阈值随各自壳半径）
         const r = entry.radius;
@@ -1698,6 +1863,8 @@
             Math.min(1, Math.max(0, (d / r - 2.4) / 4.6));
         }
       }
+      // 大气辉光壳无逐帧 uniform：外视/内视剖面按相机高度在 shader 内交接
+      // （atmoHaloShellMaterial），近距地平雾带即坠入段的大气散射
       if (entry.miniMarker) {
         const mp = entry.miniParams;
         const angPx = (2 * entry.radius / Math.max(d, 1e-6)) / projScale * hPx;
@@ -1784,6 +1951,217 @@
     return f;
   }
 
+  /* —— 行星反照光（真实光照模式）：近距行星反射的太阳光照明飞船 ——
+   * 物理量级 E_shine/E_sun ≈ α_g × (R/d)² × k：几何反照率 × 行星盘立体角占比
+   * (R/d)² × 相位亮度 k = (1+cosα)/2。α 为行星侧相位角（日-行星-飞船）：d≪AU
+   * 时它与飞船处日-行星张角互补，取错会使明暗反相；飞船在向日面上空 α→0
+   * 见全相 k→1，行星位于飞船与太阳之间（飞船在夜面上空）α→180° k→0 只见
+   * 夜面，与 eclipseFactor 本影判定自洽。逐帧取贡献最大
+   * 的天体：Grand Finale 近土点 d≈1.06R 时 (R/d)²≈0.9，土照可达直射阳光四成；
+   * 卫星飞掠（Enceladus 25 km 掠过等）同一模型自动生效。
+   * 照明经 CassiniModel.setShine 注入飞船材质（包裹漫射 + 金属镜面）而非场景
+   * 光源——场景光会泄漏到行星材质，材质注入与模型级补光（injectFill）同一
+   * 惯例只进飞船。包裹宽度 w = sin(行星角半径) = R/d：行星是扩展光源，张角
+   * 越大光越软（w→1 占满天空退化为半球环境光，w→0 远距退化为平行光），物理
+   * 照明截止角 90°+γ 处精确归零。方向按相机四元数转入视图空间（同大气
+   * uSunDirView 惯例）。色调与亮度随位置实时解算：按飞船天底点（偏向日面，
+   * 相位越亏越贴向日下点——亮面才是反照光的实际来源）采样行星表面贴图本色，
+   * 地球海洋→深蓝偏暗、大陆→土黄/绿，气态巨行星随纬度取云带色；行星阴影区
+   * （夜面）面元按局地光照加权趋零，反照光随之减弱；贴图未就绪/缺失回退
+   * SHINE_TINT 静态色。 */
+  const SHINE_ALBEDO = {
+    saturn: 0.47, jupiter: 0.52, earth: 0.37, venus: 0.67, mars: 0.25,
+    mercury: 0.14, moon: 0.14, neptune: 0.41, uranus: 0.48, titan: 0.22,
+    enceladus: 1.2, rhea: 0.65, dione: 0.55, tethys: 0.8, mimas: 0.6, iapetus: 0.30,
+  };
+  const SHINE_TINT = {
+    saturn: [1.0, 0.92, 0.74], jupiter: [1.0, 0.93, 0.80],
+    earth: [0.72, 0.82, 1.0], venus: [1.0, 0.95, 0.82], mars: [1.0, 0.83, 0.65],
+    titan: [1.0, 0.82, 0.55],
+  };
+  /* —— 位置相关色调与亮度：表面贴图 CPU 采样 ——
+   * 每天体懒抽取一张 128×64 equirect 缩略图（image/canvas 统一走 drawImage，
+   * 贴图就绪前逐帧重试），并记录其全球平均亮度 lum（线性域）。逐帧在局部切
+   * 平面取天底 ±10° 共 5 点双线性采样，每点先按贴图编码线性化、再按局地朗伯
+   * 光照 max(0, N·L) 加权累加——行星阴影区（夜面）面元权重趋零，反照光随之
+   * 减弱：飞掠晨昏线时变暗、深入夜面时近乎熄灭（月球/卫星进入地影等掩食
+   * 几何下同理自洽）。加权和除以 5·lum（线性域）锚定：全球均亮面元 → 亮度
+   * ≈1，云层冰面高于 1（钳 3），海洋暗色地质低于 1（伊阿珀托斯明暗两面对比
+   * 可达数倍）；总体量级仍由 SHINE_ALBEDO
+   * 标量控制。经纬度约定与 applySpin 一致：网格局部 +X 轴 = 贴图中心（本初
+   * 子午线），行 0 = 北极（flipY 贴图顶行）。sRGB 贴图（loadTex）按 sRGB
+   * 曲线线性化，proc 画布贴图本就按线性解释。贴图未就绪/缺失回退 SHINE_TINT
+   * 静态色。 */
+  const _shineAcc = [0, 0, 0];
+  const _shineTex = [0, 0, 0];
+  const _shineQ = new THREE.Quaternion();
+  const _shineNadir = new THREE.Vector3();
+  const _shineSunDir = new THREE.Vector3();
+  const _shineSmp = new THREE.Vector3();
+  const _shineS = new THREE.Vector3();
+  const _shineT1 = new THREE.Vector3();
+  const _shineT2 = new THREE.Vector3();
+  function ensureShineMap(e) {
+    if (e._shineMap !== undefined) return e._shineMap;
+    const map = e.mesh && e.mesh.material && e.mesh.material.map;
+    if (!map) { e._shineMap = null; return null; }   // 无贴图天体：永久回退静态色
+    const img = map.image;
+    if (!img || !img.width) return undefined;        // 贴图未就绪，下帧重试
+    const W = 128, H = 64;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, W, H);
+    const data = ctx.getImageData(0, 0, W, H).data;
+    const srgb = map.encoding === THREE.sRGBEncoding;
+    const dec = (v) => srgb
+      ? (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4))
+      : v;                                       // proc 画布贴图本就按线性解释
+    let lsum = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      // 全球平均亮度取线性域（与采样一致）：先解码再算亮度
+      lsum += 0.2126 * dec(data[i] / 255) +
+              0.7152 * dec(data[i + 1] / 255) +
+              0.0722 * dec(data[i + 2] / 255);
+    }
+    e._shineMap = {
+      d: data, w: W, h: H,
+      lum: lsum / (W * H),                           // 全球平均亮度（线性域，采样锚点）
+      srgb,
+      off: (map.offset && map.offset.x) || 0,        // equirect 经度偏移（Iapetus）
+    };
+    return e._shineMap;
+  }
+  function shineTexel(m, u, rowF, out) {
+    const W = m.w, H = m.h, d = m.d;
+    const x = ((u % 1) + 1) % 1 * W;
+    const y = Math.min(Math.max(rowF, 0), H - 1);
+    const x0 = Math.floor(x) % W, y0 = Math.floor(y);
+    const fx = x - Math.floor(x), fy = y - y0;
+    const x1 = (x0 + 1) % W, y1 = Math.min(y0 + 1, H - 1);
+    const i00 = (y0 * W + x0) * 4, i10 = (y0 * W + x1) * 4;
+    const i01 = (y1 * W + x0) * 4, i11 = (y1 * W + x1) * 4;
+    for (let c = 0; c < 3; c++) {
+      const a = d[i00 + c] + (d[i10 + c] - d[i00 + c]) * fx;
+      const b = d[i01 + c] + (d[i11 + c] - d[i01 + c]) * fx;
+      out[c] = a + (b - a) * fy;
+    }
+  }
+  function sampleShineTint(e, k, cdx, cdy, cdz, out) {
+    const m = ensureShineMap(e);
+    if (!m) return false;
+    // 天底（行星中心→飞船）与日面方向转入网格局部系（含倾角 + 当前自转角）
+    e.mesh.getWorldQuaternion(_shineQ).invert();
+    _shineNadir.set(-cdx, -cdy, -cdz).applyQuaternion(_shineQ);
+    const se = registry.get('sun');
+    if (se) {
+      _shineSunDir.set(
+        se.world[0] - e.world[0], se.world[1] - e.world[1], se.world[2] - e.world[2]
+      ).applyQuaternion(_shineQ).normalize();
+    } else {
+      _shineSunDir.set(0, 0, 0);
+    }
+    // 采样点自天底向日面偏置：可见亮面随相位亏缺向日侧边缘退缩为新月，
+    // 偏置 ~tan(α/2)·R 无上限以始终落在被照亮面（亮度衰减由相位因子 k 负责），
+    // α = 日-行星-飞船张角（k = (1+cosα)/2）
+    const alpha = Math.min(Math.PI - 1e-4,
+      Math.acos(Math.max(-1, Math.min(1, 2 * k - 1))));
+    const bias = 0.5 * Math.tan(alpha / 2);
+    _shineSmp.copy(_shineNadir).addScaledVector(_shineSunDir, bias).normalize();
+    // 局部切平面标架：天底点 + 沿表面 ±10°（东/北）共 5 点抑海岸线跳变
+    _shineT1.set(0, 1, 0);
+    if (Math.abs(_shineSmp.y) > 0.99) _shineT1.set(1, 0, 0);
+    _shineT2.crossVectors(_shineSmp, _shineT1).normalize();   // 东
+    _shineT1.crossVectors(_shineT2, _shineSmp).normalize();   // 北
+    const acc = _shineAcc;
+    acc[0] = acc[1] = acc[2] = 0;
+    const dt = Math.tan(10 / 180 * Math.PI);
+    let lamSum = 0;
+    for (let i = 0; i < 5; i++) {
+      _shineS.copy(_shineSmp);
+      if (i & 3) {
+        _shineS.addScaledVector((i & 1) ? _shineT2 : _shineT1, (i & 2) ? -dt : dt)
+          .normalize();
+      }
+      const lam = Math.max(0, _shineS.dot(_shineSunDir));   // 局地朗伯光照
+      if (lam <= 0) continue;                               // 阴影面元不反光
+      lamSum += lam;
+      const u = 0.5 + Math.atan2(_shineS.z, _shineS.x) / TAU + m.off;
+      const row = Math.acos(Math.max(-1, Math.min(1, _shineS.y))) / Math.PI * (m.h - 1);
+      shineTexel(m, u, row, _shineTex);
+      for (let c = 0; c < 3; c++) {
+        // 先线性化再加权：反射亮度 ∝ 反照率 × 局地光照，均在线性域
+        const v = _shineTex[c] / 255;
+        acc[c] += (m.srgb
+          ? (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4))
+          : v) * lam;
+      }
+    }
+    // 锚定：采样均值/全球均值（acc 与 lum 均为线性域 0..1）
+    const inv = 1 / (5 * Math.max(m.lum, 0.002));
+    let lr = acc[0] * inv, lg = acc[1] * inv, lb = acc[2] * inv;
+    // 亮度钳制：云面/冰面可高于全球均值，钳 3 防局部爆亮（等比缩保色相）
+    const lum2 = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+    const cs = lum2 > 3 ? 3 / lum2 : 1;
+    out[0] = lr * cs; out[1] = lg * cs; out[2] = lb * cs;
+    _shineDbgSmp[0] = _shineSmp.x; _shineDbgSmp[1] = _shineSmp.y; _shineDbgSmp[2] = _shineSmp.z;
+    _shineDbgSun[0] = _shineSunDir.x; _shineDbgSun[1] = _shineSunDir.y; _shineDbgSun[2] = _shineSunDir.z;
+    shineDebug.lam = lamSum / 5;
+    return true;
+  }
+  const _shineDir = new THREE.Vector3();
+  const _shineCol = new THREE.Vector3();
+  const _shineTint = [1, 1, 1];
+  const _shineDbgCraft = [0, 0, 0], _shineDbgSmp = [0, 0, 0], _shineDbgSun = [0, 0, 0];
+  const shineDebug = {
+    body: null, tint: null, i: 0, dKm: 0, alphaDeg: 0,
+    craft: _shineDbgCraft, smp: _shineDbgSmp, sunL: _shineDbgSun, lam: 0,
+  };   // 调试探针（CassiniScene.shineDebug）；craft/smp/sunL 为复用缓冲，仅即时读取
+  function updatePlanetShine() {
+    let best = 0, bestName = null, bestEntry = null, bk = 0, bdx = 0, bdy = 0, bdz = 0, bw = 0,
+        bdKm = 0, bAlpha = 0;
+    for (const [name, e] of registry) {
+      if (name === '__sunLight' || name === 'sun' || !e.radius) continue;
+      const dx = e.world[0] - _cassWorld[0],
+            dy = e.world[1] - _cassWorld[1],
+            dz = e.world[2] - _cassWorld[2];
+      const d = Math.hypot(dx, dy, dz);
+      if (d <= e.radius) continue;            // 已撞入行星本体（掩食因子已归零）
+      const ratio = e.radius / d;
+      // 行星侧相位角 α（日-行星-飞船）：dx·e.world = (行星→飞船)·(行星→太阳)，
+      // 日心系太阳在原点。α→0 飞船在向日面上空见全相 k→1；α→180° 行星位于
+      // 飞船与太阳之间只见夜面 k→0，与 eclipseFactor 本影判定自洽
+      const cosA = Math.max(-1, Math.min(1,
+        (dx * e.world[0] + dy * e.world[1] + dz * e.world[2]) /
+        (d * (Math.hypot(e.world[0], e.world[1], e.world[2]) || 1))));
+      const k = 0.5 * (1 + cosA);
+      const c = (SHINE_ALBEDO[name] || 0.4) * ratio * ratio * k;
+      if (c > best) {
+        best = c; bestName = name; bestEntry = e; bk = k; bw = ratio; bdKm = d; bAlpha = cosA;
+        bdx = dx / d; bdy = dy / d; bdz = dz / d;   // 飞船→行星单位向量
+      }
+    }
+    if (best > 1e-4) {
+      let tint = SHINE_TINT[bestName] || [1, 1, 1];
+      if (sampleShineTint(bestEntry, bk, bdx, bdy, bdz, _shineTint)) tint = _shineTint;
+      const I = SUN_INTENSITY * best;
+      _shineDir.set(bdx, bdy, bdz).applyQuaternion(_camQInv);
+      _shineCol.set(tint[0] * I, tint[1] * I, tint[2] * I);
+      window.CassiniModel.setShine(_shineDir, _shineCol, bw);
+      shineDebug.body = bestName;
+      shineDebug.tint = [tint[0], tint[1], tint[2]];
+      shineDebug.i = best;
+      shineDebug.dKm = Math.round(bdKm);
+      shineDebug.alphaDeg = +(Math.acos(Math.max(-1, Math.min(1, bAlpha))) * 180 / Math.PI).toFixed(1);
+      _shineDbgCraft[0] = _cassWorld[0]; _shineDbgCraft[1] = _cassWorld[1]; _shineDbgCraft[2] = _cassWorld[2];
+      shineDebug.craft = _shineDbgCraft;
+    } else {
+      window.CassiniModel.setShine(null, null, 0);
+      shineDebug.body = null; shineDebug.tint = null; shineDebug.i = 0;
+      shineDebug.dKm = 0; shineDebug.alphaDeg = 0; shineDebug.craft = null;
+    }
+  }
+
   /* —— 亮点标记视线遮挡 —— 太阳/Cassini/Huygens 标记 depthTest:false（标记须
    * 盖过自身天体的近侧盘面，深度缓冲无法区分「被自身盘面挡住」与「被前方
    * 行星挡住」），改用 CPU 射线-球体判定：相机→目标连线被任一更近天体
@@ -1813,8 +2191,9 @@
    *   (window.CASSINI_ATT)：Q_scene(t) = A ⊗ q(t) ⊗ M ⊗ Q_GLB⁻¹（坐标链见该
    *   脚本头注释，滚动自由度与 Eyes 渲染一致）。
    * 覆盖内逐样本 slerp 回放；HUD 姿态标签按真实 HGA(+Z) 指向实时分类。
-   * 覆盖外（2017-09-15 05:00Z 后坠入大气段等）退回任务记录启发式：HGA(+Z)
-   * 默认对地通信（Earth 方向，实时由历表求解），三个有据可查的例外：
+   * 覆盖外（数据止于 2017-09-15 10:33Z，其后的坠入大气段等）退回任务记录
+   * 启发式：HGA(+Z) 默认对地通信（Earth 方向，实时由历表求解），三个有据可
+   * 查的例外：
    *  1. SOI 防护/点火（2004-07-01）：穿越环面前 ~1 h 起 HGA 转向前方（行进方向）
    *     作防尘盾，保持到 96 分钟点火结束（02:48 UTC），期间与地球失联（JPL
    *     mission status report；穿越时刻由轨迹数据在土星赤道面内的法向坐标
@@ -1915,7 +2294,10 @@
   const _attScanS = [0, 0, 0];
 
   /* 环面过零扫描（一次性）：轨迹点相对土星位置在赤道面法向上的坐标过零 →
-   * 穿越时刻 + 穿越半径。finale 俯冲的穿越半径在主环内缘（74,500 km）以内。 */
+   * 穿越时刻 + 穿越半径。finale 俯冲的穿越半径在主环内缘（74,500 km）以内。
+   * 终段再入（2017-09-15）的坠入轨迹也会在大气内（r ≈ 60,160 km < 行星半径）
+   * 穿越赤道面一次，但它不是环缝俯冲：穿越后轨迹（任务）随即终结，防护窗口
+   * 结束前已无轨迹数据——过滤掉，再入段 HGA 保持对地直至烧毁（无例外）。 */
   function scanRingCrossings() {
     attScanDone = true;
     const sat = registry.get('saturn');
@@ -1953,7 +2335,10 @@
       if (d < bd) { bd = d; best = c.t; }
     }
     attSoiCross = best;
-    attFinaleCrossings = found.filter(c => c.t >= tFin0 && c.r < 74500);
+    // 防护窗口（±35 min）要求航天器穿越后继续飞行：终段再入的赤道面穿越
+    // 在窗口结束前轨迹已终结（大气内坠毁），排除之，避免覆盖对地姿态
+    attFinaleCrossings = found.filter(c =>
+      c.t >= tFin0 && c.r < 74500 && c.t + ATT_RAM_HALF < trailT[trailN - 1]);
   }
 
   /* t 时刻的姿态目标：attMode/ATT_LBL 标签；_attV 填入 HGA(+Z) 目标方向（未归一） */
@@ -2148,9 +2533,20 @@
       const x = (projV.x * 0.5 + 0.5) * w;
       const y = (-projV.y * 0.5 + 0.5) * h;
       const rpx = (Math.asin(Math.min(1, entry.radius / Math.max(dist, 1e-9))) / halfTan) * (h / 2);
-      screenPts.set(name, [x, y]);
-      entry.labelEl.classList.remove('hide');
-      entry.labelEl.classList.toggle('dim', dist > 4e9);
+      // 放大到行星成为屏幕主体（盘面像素半径超过小半屏的 35%）时淡出该天体标签，缩小后恢复；
+      // 淡出由 .hide 的透明度过渡完成，仍保留在 items 中继续参与遮挡判定；
+      // 隐藏判定带迟滞区间，避免临界缩放处来回闪烁
+      const bigR = Math.min(w, h) * 0.35;
+      if (entry.zoomHidden ? rpx > bigR * 0.85 : rpx > bigR) {
+        entry.zoomHidden = true;
+        entry.labelEl.classList.add('hide');
+        screenPts.delete(name);
+      } else {
+        entry.zoomHidden = false;
+        screenPts.set(name, [x, y]);
+        entry.labelEl.classList.remove('hide');
+        entry.labelEl.classList.toggle('dim', dist > 4e9);
+      }
       items.push({ name, x, y, dist, rpx, entry });
     }
     // 定位：标签抬高量随盘面像素半径连续增长（smoothstep 过渡），无阈值突变；
@@ -2261,6 +2657,7 @@
     get TILT() { return TILT; },
     get soiState() { return soiState; },
     get attitudeState() { return ATT_LBL[attMode] || ATT_LBL.earth; },
+    get shineDebug() { return shineDebug; },   // 行星反照光逐帧状态（调试）
     setCameraWorld(v) { camWorld.x = v[0]; camWorld.y = v[1]; camWorld.z = v[2]; },
     camWorld,
     cassiniPosAt,
