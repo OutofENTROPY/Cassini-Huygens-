@@ -1,43 +1,15 @@
-# 原始历表与生成缓存不入库（tools/ 可从 eyes.nasa.gov 重新下载）
+# 原始数据（tools/ 可重新下载）与 Python 缓存
 data_raw/
 __pycache__/
 *.pyc
-.zcode/
 
-# 本地运行产生的日志与临时输出
-server.log
+# 本地日志与临时文件
 *.log
 tmp_*.txt
 out_test.txt
 
-.git/
-.hg/
-.svn/
-node_modules/
-bower_components/
-jspm_packages/
-__pycache__/
-site-packages/
-venv/
-coverage/
-htmlcov/
-lcov-report/
-cmakefiles/
-cmake-build-*/
-bazel-*/
-pods/
-deriveddata/
-storybook-static/
-playwright-report/
-test-results/
-allure-results/
-allure-report/
-cdk.out/
-*.egg-info/
-*.dist-info/
-eggs/
-pip-wheel-metadata/
-wheels/
+# 根目录调试截图
+/*.png
 
-# build_textures.py 打包重编码中间产物
+# build_textures.py 中间产物
 textures/pack_*
