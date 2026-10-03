@@ -6,6 +6,10 @@
   - 地球全套（地表/云/夜灯/海洋镜面）+ 水星/月球/火星/木星/金星/土星/
     天王星/海王星 + 土星/天王星环条带：NASA Eyes on the Solar System 官方
     立方面贴图（公域），经 tools/stitch_nasa_eyes.py 重投影为等距圆柱投影。
+  - 土卫六/二/三/四/五/八（Titan/Enceladus/Rhea/Dione/Tethys/Mimas）：
+    NASA Eyes maps/{body}/color_{2048|1024}_{face}.png（tiles 存
+    data_raw/nasa_eyes_tiles/），同样经 stitch 重投影。Titan color 官方
+    仅 1024²/面（ 表面为雾霾遮蔽，Eyes 以 1024 版渲染）。
   - 土卫八：NASA Cassini ISS 全球镶嵌（data_raw/nasa_textures/Iapetus.jpg）。
   - 太阳保留程序化贴图（proc:sun，NASA 的太阳贴图仅 512²/面）。
 """
@@ -36,6 +40,15 @@ PLANETS = [
     ("uranusRing", "nasa_uranus_ring.png", None, None),
     # Iapetus：NASA Cassini ISS 真实镶嵌（暗区经度对齐见 js/scene.js texOffset）
     ("iapetus", "@iapetus", None, 90),
+    # 土星六颗卫星：NASA Eyes color 立方面（1024²/2048²）→ stitch 母版。
+    # 打包统一降采样到 2048×1024 q85：卫星在画面中极小，2k 足够，
+    # 且 textures.js 单文件须低于 Cloudflare Pages 25 MiB 限制
+    ("titan", "src/nasa_titan_2k.jpg", (2048, 1024), 85),
+    ("enceladus", "src/nasa_enceladus_4k.jpg", (2048, 1024), 85),
+    ("rhea", "src/nasa_rhea_4k.jpg", (2048, 1024), 85),
+    ("dione", "src/nasa_dione_4k.jpg", (2048, 1024), 85),
+    ("tethys", "src/nasa_tethys_4k.jpg", (2048, 1024), 85),
+    ("mimas", "src/nasa_mimas_4k.jpg", (2048, 1024), 85),
 ]
 
 
@@ -89,6 +102,7 @@ def main():
     dst = os.path.join(HERE, "..", "data", "textures.js")
     with open(dst, "w", encoding="utf-8") as f:
         f.write("/* 行星贴图 — NASA Eyes on the Solar System 官方贴图（地球含夜灯/海洋镜面；"
+                "土星卫星 Titan/Enceladus/Rhea/Dione/Tethys/Mimas 为官方 color 立方面重投影；"
                 "土卫八为 Cassini ISS 镶嵌）— base64 data URI */\n")
         f.write("window.TEXTURE_DATA = ")
         f.write(json.dumps(out, separators=(",", ":")))
