@@ -222,7 +222,7 @@ window.CassiniModel = (function () {
       if (p.ao && mat.map) { mat.aoMap = mat.map; mat.aoMapIntensity = p.ao; }
       mat.envMap = env;
       mat.envMapIntensity = p.env;
-      injectFill(mat);
+      injectFill(mat, tag === 'probe' ? shineProbe : shineSC);
       mat.needsUpdate = true;
       eclipseMats.push({ mat, baseColor: mat.color.clone(), baseMetal: hasMRMap ? 1 : p.metal, baseEnv: p.env, tag });
     }
@@ -275,15 +275,15 @@ window.CassiniModel = (function () {
     return out;
   })();
 
-  function injectFill(mat) {
+  function injectFill(mat, shine) {
     // 非 lit 材质（MeshBasicMaterial 等）无 aomap_fragment/lighting，replace 为空操作；
     // uniform 声明须注入全局作用域（aomap_fragment / lights_fragment_begin 位于 main() 内）
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uFillI = fillUniform;
       shader.uniforms.uPointOff = pointOffUniform;
-      shader.uniforms.uShineDir = shineDirUniform;
-      shader.uniforms.uShineCol = shineColUniform;
-      shader.uniforms.uShineW = shineWUniform;
+      shader.uniforms.uShineDir = shine.dir;
+      shader.uniforms.uShineCol = shine.col;
+      shader.uniforms.uShineW = shine.w;
       shader.fragmentShader = 'uniform float uFillI;\nuniform float uPointOff;\n' +
         'uniform vec3 uShineDir;\nuniform vec3 uShineCol;\nuniform float uShineW;\n' + shader.fragmentShader
         .replace('#include <aomap_fragment>',
@@ -328,17 +328,31 @@ window.CassiniModel = (function () {
    *     的锐高光宽得多。
    * uShineDir 为视图空间单位向量（scene.js 按相机四元数变换，同大气
    * uSunDirView 惯例）；uShineCol = 行星色调 × 强度（与平行光同量纲，强度
-   * = SUN_INTENSITY × α_g(R/d)²k）。uniform 对象全材质共享，一次调用全船生效。 */
-  const shineDirUniform = { value: new THREE.Vector3(0, 0, -1) };
-  const shineColUniform = { value: new THREE.Vector3(0, 0, 0) };
-  const shineWUniform = { value: 0 };
-
-  function setShine(dirView, col, w) {
-    if (dirView) shineDirUniform.value.copy(dirView);
-    if (col) shineColUniform.value.copy(col);
-    else shineColUniform.value.set(0, 0, 0);
-    shineWUniform.value = w || 0;
+   * = SUN_INTENSITY × α_g(R/d)²k）。uniform 对象按实体分套、套内全材质
+   * 共享：分离后轨道器与探测器相距可达数万 km（Titan 进入日 ~6×10⁴ km），
+   * 同一解算结果只对解算位置正确——探测器由 scene.js 按自身位置独立解算
+   * 并经 setProbeShine 写入另一套（分离前探测器挂于组合体走 'sc' 套，
+   * 独立探测器模型彼时隐藏，其 uniforms 值不参与渲染）。 */
+  function mkShineUniforms() {
+    return {
+      dir: { value: new THREE.Vector3(0, 0, -1) },
+      col: { value: new THREE.Vector3(0, 0, 0) },
+      w: { value: 0 },
+    };
   }
+  const shineSC = mkShineUniforms();
+  const shineProbe = mkShineUniforms();
+
+  function setShineUniforms(u, dirView, col, w) {
+    if (dirView) u.dir.value.copy(dirView);
+    if (col) u.col.value.copy(col);
+    else u.col.value.set(0, 0, 0);
+    u.w.value = w || 0;
+  }
+
+  function setShine(dirView, col, w) { setShineUniforms(shineSC, dirView, col, w); }
+
+  function setProbeShine(dirView, col, w) { setShineUniforms(shineProbe, dirView, col, w); }
 
   /* 包一层：体轴旋转 + 缩放（补光由 enhanceMaterials 注入材质，见 injectFill） */
   function wrapModel(scene3, spanKm, name) {
@@ -353,25 +367,91 @@ window.CassiniModel = (function () {
     return wrap;
   }
 
-  /* Huygens 独立探测器：wrap(速度方向) → spin(自旋稳定) → 防热大底对准 +Z。
-   * 从组合体摘出的 huygens_probe 子树自带侧挂偏置（GLB +X 侧），先按包围盒
-   * 平移回原点使自旋轴（大底法向）过质心，再经 pre 旋转把 GLB +X → wrap +Z。 */
+  /* Huygens 独立探测器：wrap → spin(自旋稳定) → asm(GLB 体轴映射 + 米→km)。
+   * 只做纯旋转 + 均匀缩放，不引入任何平移/轴向预旋转，因此 wrap 原点严格落在
+   * GLB 原点上——而 GLB 原点就是 huygens_probe 在组合体里的挂点（实测局部变换
+   * 为单位阵）。于是：
+   *   挂点坐标 = wrap 原点的父级位置，分离前按 Cassini 姿态摆位后与组合体
+   *   （内部自带同一节点）逐点重合，分离后只需叠加真实相对漂移 relCass。
+   * 自旋轴 = 探测器回转对称轴 = wrap-local +Y（由 GLB 顶点协方差实测：wrap 系
+   * 包围盒 size=(2.615, 0.806, 2.615) m，X/Z 为 φ2.615 大底直径、Y 为轴向厚度
+   * 0.806 m，σ_Y 最小且 X/Z 对称；见 tools/probe_huygens_axes.js）。**该轴并不
+   * 过 wrap 原点**——wrap 原点即 GLB 挂点（探测器侧挂在母船边缘），实测偏离大底
+   * 圆心 (x≈0, z≈−1.115 mm)，与探测器半径同量级（见 probeRevolutionAxis）。
+   * 「body +Y 对准惯性系 RAM 方向」的姿态由 huygens.js 给出，7 rpm 自旋写在
+   * spin 组的本地 Y 旋转上（huygens.js 先把旋转中心补偿到大底圆心、再补偿质心
+   * 不动）。
+   * 质心相对挂点的偏差记入 userData.centroid（asm 坐标系，km）：自旋须绕质心
+   * 而非挂点，huygens.js 用它在自旋前把模型平移到质心、自旋后再移回。 */
   function wrapProbe(scene3) {
-    const box = new THREE.Box3().setFromObject(scene3);
-    const c = box.getCenter(new THREE.Vector3());
-    scene3.position.sub(c);               // 包围盒中心 → 原点（GLB 米制坐标系内）
     const wrap = new THREE.Group();
     wrap.name = 'huygensProbe';
-    const spin = new THREE.Group();       // 分离后自旋稳定（约 7 rpm，绕大底轴）
-    const pre = new THREE.Group();        // GLB +X（防热大底法向）→ wrap +Z
-    pre.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2);
-    const asm = new THREE.Group();
+    const spin = new THREE.Group();       // 自旋稳定（约 7 rpm，绕大底轴，由 huygens.js 驱动）
+    const asm = new THREE.Group();        // GLB 体轴映射 + 米→km（纯旋转，不含平移）
+    asm.quaternion.copy(Q_GLB);
     asm.scale.setScalar(0.001);
-    asm.add(scene3);
-    pre.add(asm); spin.add(pre); wrap.add(spin);
-    wrap.userData.spin = spin;
+    if (scene3) asm.add(scene3);
+    spin.add(asm); wrap.add(spin);
+
+    asm.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(asm);
+    wrap.userData.centroid = box.getCenter(new THREE.Vector3());
+    // —— 真实自旋轴 = 大底回转对称轴，未必过 wrap 原点（挂点）——
+    // φ2.615 大底是一组圆盘。几何上「自旋」必须绕大底圆心那条轴转，否则会像偏心
+    // 陀螺一样扭摆。实测：wrap 原点（= GLB 挂点，探测器侧挂在母船边缘）偏离大底
+    // 圆心 (x≈0, z≈−1.115 mm)，与探测器半径同量级。这里用 Kasa 代数圆拟合把
+    // XZ 平面上大底圆盘的圆心解出来，记入 spinAxisPt（wrap/挂点系，km）。
+    // huygens.js 用它把自旋旋转中心平移到真实轴上（spin.position 补偿），
+    // 再做质心不动补偿——两件事本质是同一个「旋转不动点」定位。
+    wrap.userData.spinAxisPt = probeRevolutionAxis(asm, box);
+    wrap.userData.spin = spin;            // 自旋组（huygens.js 绕真实轴 + 质心不动驱动）
     wrap.userData.span = 0.00262;         // φ2.7 m 防热大底
     return wrap;
+  }
+
+  /* 解算回转对称轴在 wrap 系中的「轴心」（仅 XZ 平面位置；轴方向 = wrap +Y）。
+   * 方法：沿 wrap Y 把所有顶点分桶，取顶点最多的那一片（即大底圆盘所在片），
+   * 对该片顶点做 Kasa 代数最小二乘圆拟合，圆心即轴心。返回 Vector3（y 置 0，
+   * 表示轴心相对挂点的 XZ 偏移，km）。若无足够顶点则退回包围盒中心。 */
+  function probeRevolutionAxis(asm, box) {
+    const pts = [];
+    asm.traverse((o) => {
+      if (!o.isMesh || !o.geometry || !o.geometry.attributes) return;
+      const pa = o.geometry.attributes.position;
+      if (!pa) return;
+      for (let i = 0; i < pa.count; i++) {
+        // 必须经 matrixWorld 变到 wrap 系（内含 Q_GLB 与 0.001），不能只乘 0.001
+        pts.push(new THREE.Vector3().fromBufferAttribute(pa, i).applyMatrix4(o.matrixWorld));
+      }
+    });
+    if (pts.length < 12) return new THREE.Vector3(0, 0, 0);
+    // 沿 Y 分桶（片数 40），取顶点最多的一片
+    const y0 = box.min.y, y1 = box.max.y, N = 40;
+    const bins = Array.from({ length: N }, () => []);
+    const span = y1 - y0 || 1;
+    for (const p of pts) {
+      let k = Math.floor((p.y - y0) / span * N);
+      k = Math.max(0, Math.min(N - 1, k));
+      bins[k].push(p);
+    }
+    let disk = null, best = 0;
+    for (const b of bins) if (b.length > best) { best = b.length; disk = b; }
+    if (!disk || disk.length < 6) return new THREE.Vector3(0, 0, 0);
+    // Kasa 圆拟合（代数最小二乘，闭式解）
+    let sx = 0, sz = 0, sxx = 0, szz = 0, sxz = 0, sxq = 0, szq = 0, sq = 0;
+    const n = disk.length;
+    for (const p of disk) {
+      const x = p.x, z = p.z, q = x * x + z * z;
+      sx += x; sz += z; sxx += x * x; szz += z * z; sxz += x * z;
+      sxq += x * q; szq += z * q; sq += q;
+    }
+    const a11 = sxx - sx * sx / n, a12 = sxz - sx * sz / n, a22 = szz - sz * sz / n;
+    const b1 = (sxq - sx * sq / n) / 2, b2 = (szq - sz * sq / n) / 2;
+    const det = a11 * a22 - a12 * a12;
+    if (Math.abs(det) < 1e-18) return new THREE.Vector3(0, 0, 0);
+    const cx = (b1 * a22 - a12 * b2) / det;
+    const cz = (a11 * b2 - b1 * a12) / det;
+    return new THREE.Vector3(cx, 0, cz);
   }
 
   let pending = null;
@@ -398,8 +478,8 @@ window.CassiniModel = (function () {
       if (attached && attached.parent) attached.parent.remove(attached);
       const orbiter = wrapModel(orbScene, 0.0180, 'cassiniOrbiter');
 
-      // 独立探测器 = huygens_probe 子树克隆；材质独立实例（掩食 tag 'probe'），
-      // 使分离后轨道器/探测器可分别进入行星本影
+      // 独立探测器 = huygens_probe 子树克隆（结构与 stack 内的同一节点逐点重合）；
+      // 材质独立实例（掩食 tag 'probe'），使分离后轨道器/探测器可分别进入行星本影
       const probeNode = src.getObjectByName(PROBE_NODE);
       let probe = null;
       if (probeNode) {
@@ -419,5 +499,5 @@ window.CassiniModel = (function () {
     pending.then(done);
   }
 
-  return { load, Q_GLB, setEclipse, setFillLight, setSunMode, setShine, setEnvironment };
+  return { load, Q_GLB, setEclipse, setFillLight, setSunMode, setShine, setProbeShine, setEnvironment };
 })();

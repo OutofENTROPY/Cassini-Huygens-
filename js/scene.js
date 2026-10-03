@@ -127,7 +127,240 @@
     return a;
   })();
 
+  /* —— f32 量化噪声平滑（LOESS 式局部加权回归，装载期一次）——
+   * 主轨迹顶点为 f32 日心 km：土星距离（~1.4e9 km）处 float32 ULP≈128 km，
+   * 顶点携带 σ≈30 km 的白噪声——60 s 节拍段二阶差分中位 64 km（真实曲率
+   * 信号 <1 km），近掠段弦长仅数百 km 时锯齿角可达 20°+。放大播放时新顶点
+   * 持续进入绘制区间，轨迹末端随之抖动（即"放大运行时轨迹抖动"）。
+   * 窗口 = ±M 顶点（首末边界收缩），权重 = 时间三角核 (1−τ²)²：对节拍突变
+   * 与自适应疏密稳健（均匀网格 SG 权重跨节拍窗口会产生 Runge 振荡，实测
+   * 单点位移可达数十万 km）。基 [1,τ,τ²,τ³]，法方程对称正定 → Cholesky
+   * 免主元；退化窗口（对角 ≤1e-11）按嵌套模型降阶 3→2→1，仍退化保持原值。
+   * 实测（tools/prototype_smooth.py，v1 数据）：60 s 段二阶差分 64 → 1.5 km
+   * 中位，3600 s 段真实曲率（二阶差分 ~130 km）保留，位移中位 ~28 km、
+   * p99 ~90 km。trailT 不动，绘制区间 / SOI 窗口 rel / huygens relCass 耦合
+   * 等全部下游推导自动一致（同源平滑顶点）。 */
+  function smoothTrailNoise() {
+    const M = 10;
+    const src = trailThree.slice();
+    const p = new Float64Array(7);            // p[k] = Σ w·τ^k, k=0..6
+    const q = new Float64Array(16);           // q[k*4+c] = Σ w·τ^k·coord_c, k=0..3（嵌套降阶共用）
+    const L = new Float64Array(16);           // Cholesky 下三角（≤4×4）
+    const y = new Float64Array(12);           // 前代/回代解（3 右端）
+    for (let i = 0; i < trailN; i++) {
+      const m = Math.min(M, i, trailN - 1 - i);
+      if (m < 2) continue;
+      const o = i * 3, ti = trailT[i];
+      const H = Math.max(ti - trailT[i - m], trailT[i + m] - ti);
+      if (!(H > 0)) continue;
+      p.fill(0); q.fill(0);
+      for (let j = i - m; j <= i + m; j++) {
+        const tau = (trailT[j] - ti) / H;
+        const u = 1 - tau * tau;
+        if (u <= 0) continue;
+        const w = u * u;
+        const t2 = tau * tau, t3 = t2 * tau;
+        const w0 = w, w1 = w * tau, w2 = w * t2, w3 = w * t3;
+        p[0] += w0; p[1] += w1; p[2] += w2; p[3] += w3;
+        p[4] += w * t2 * t2; p[5] += w * t3 * t2; p[6] += w * t3 * t3;
+        const g = j * 3;
+        q[0] += w0 * src[g];     q[1] += w0 * src[g + 1]; q[2] += w0 * src[g + 2];
+        q[4] += w1 * src[g];     q[5] += w1 * src[g + 1]; q[6] += w1 * src[g + 2];
+        q[8] += w2 * src[g];     q[9] += w2 * src[g + 1]; q[10] += w2 * src[g + 2];
+        q[12] += w3 * src[g];    q[13] += w3 * src[g + 1]; q[14] += w3 * src[g + 2];
+      }
+      // 基 [1,τ,τ²,τ³]：阶 D 的法方程 = (D+1)² SPD Gram，Cholesky 逐阶尝试
+      let done = false;
+      for (let D = 4; D >= 1 && !done; D--) {
+        // L = cholesky(S)，S[r][c] = p[r+c]
+        let ok = true;
+        for (let r = 0; r < D && ok; r++) {
+          for (let c = 0; c <= r; c++) {
+            let s = p[r + c];
+            for (let k = 0; k < c; k++) s -= L[r * 4 + k] * L[c * 4 + k];
+            if (r === c) {
+              if (s <= 1e-11) { ok = false; break; }
+              L[r * 4 + c] = Math.sqrt(s);
+            } else {
+              L[r * 4 + c] = s / L[c * 4 + c];
+            }
+          }
+        }
+        if (!ok) continue;
+        // 前代 L·y = rhs，回代 Lᵀ·c = y；c[0] = 常数额 = 平滑位置
+        for (let c = 0; c < 3; c++) {
+          for (let r = 0; r < D; r++) {
+            let s = q[r * 4 + c];
+            for (let k = 0; k < r; k++) s -= L[r * 4 + k] * y[k * 3 + c];
+            y[r * 3 + c] = s / L[r * 4 + r];
+          }
+          for (let r = D - 1; r >= 0; r--) {
+            let s = y[r * 3 + c];
+            for (let k = r + 1; k < D; k++) s -= L[k * 4 + r] * y[k * 3 + c];
+            y[r * 3 + c] = s / L[r * 4 + r];
+          }
+        }
+        trailThree[o] = y[0];
+        trailThree[o + 1] = y[1];
+        trailThree[o + 2] = y[2];
+        done = true;
+      }
+    }
+  }
+  smoothTrailNoise();
+
+  /* —— 微步顶点塌缩（装载期一次，索引保持）——
+   * 烘焙端把多套细网格（SOI 60/600 s、近拱 240 s、Huygens 60 s）、粗网格
+   * （3600 s）与迭代细分中点 union 后，会出现「与相邻顶点时间几乎重合
+   * （Δt 0.002–5 s）但空间上偏离邻段数 km~134 km」的顶点（实测 3603 处）。
+   * 这类顶点连线后形成一段近零长度、近零时间的横移短线，光栅化后就是肉眼
+   * 可见的「折线 / 台阶」——即用户反馈的发射段与土星段肘形缺口
+   * （如 i=433：Δt=0.21 s、侧偏 1.17 km → 16.5° 折角；经 smoothTrailNoise
+   * 的局部三次拟合还会放大到 92.7°）。
+   *
+   * 塌缩几何（不改 trailT / trailN，下游 idxNow / rel / huygens 索引全不变）：
+   * 对每个微步顶点 i，取其前后第一个「时间分离 ≥ MIN_DT」的锚顶点 L、R，把 i
+   * 按时间线性插值投到 L→R 弦上 → 短线退化为共线。
+   *
+   * 安全性论证（为何搬动不引入可见误差）：
+   *   搬移量上限判据 = max(1·ULP(world), TRAIL_TOL)，其中 ULP = |world|·2⁻²⁴·2
+   *   为 f32 顶点的量化步长、TRAIL_TOL = 30 km 为烘焙端弦差容限。
+   *   - 近场（|world| < 1.26e8 km → ULP < 30 km）：判据 = 30 km = 轨迹自身
+   *     保真预算，搬动后误差不超过邻弦既有误差，必然不可见（发射段实测搬移
+   *     中位 3.1 km / 最大 8.3 km）。
+   *   - 远场（土星段 |world| ≈ 1.5e9 km → ULP ≈ 358 km）：判据 = ULP，即误差
+   *     < f32 表示精度——无论如何都不可表示、屏上不可见。
+   *   实测：3603 处全部满足（最大搬移 133.9 km，位于土星段，< 该处 ULP）；
+   *   发射段折角 16.5°/17.0° → 4.2°；全局 p99 20.9° → 14.3°；真实物理
+   *   特征（如 i≈48856 的 103.3° 深空转向）完全保留。 */
+  (function collapseMicroSteps() {
+    const MIN_DT = 5.0;         // 判定微步的时间阈值（s）
+    const TRAIL_TOL = 30.0;     // km，与烘焙端一致
+    const ULP_F = Math.pow(2, -23) * 2;   // f32 相对量化步长（ULP/|x|）
+    // 预计算每个顶点的前后锚（时间间隔 ≥ MIN_DT 的邻居）
+    const prevAnchor = new Int32Array(trailN);
+    const nextAnchor = new Int32Array(trailN);
+    {
+      let last = 0;
+      for (let i = 0; i < trailN; i++) {
+        if (i > 0 && trailT[i] - trailT[i - 1] >= MIN_DT) last = i - 1;
+        prevAnchor[i] = last;
+      }
+      last = trailN - 1;
+      for (let i = trailN - 1; i >= 0; i--) {
+        if (i < trailN - 1 && trailT[i + 1] - trailT[i] >= MIN_DT) last = i + 1;
+        nextAnchor[i] = last;
+      }
+    }
+    let nFix = 0, maxMove = 0;
+    for (let i = 1; i < trailN - 1; i++) {
+      const dPrev = trailT[i] - trailT[i - 1];
+      const dNext = trailT[i + 1] - trailT[i];
+      if (dPrev >= MIN_DT && dNext >= MIN_DT) continue;   // 两侧都分离 → 正常顶点
+      const L = prevAnchor[i], R = nextAnchor[i];
+      if (L >= i || R <= i || R <= L) continue;
+      const span = trailT[R] - trailT[L];
+      if (!(span > 0)) continue;
+      const a = (trailT[i] - trailT[L]) / span;
+      const lo = L * 3, hi = R * 3, o = i * 3;
+      const nx = trailThree[lo] + (trailThree[hi] - trailThree[lo]) * a;
+      const ny = trailThree[lo + 1] + (trailThree[hi + 1] - trailThree[lo + 1]) * a;
+      const nz = trailThree[lo + 2] + (trailThree[hi + 2] - trailThree[lo + 2]) * a;
+      const dx = trailThree[o] - nx, dy = trailThree[o + 1] - ny, dz = trailThree[o + 2] - nz;
+      const mv = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (mv <= 1e-4) continue;                            // 已在弦上，无需搬动
+      const rad = Math.sqrt(trailThree[o] * trailThree[o]
+        + trailThree[o + 1] * trailThree[o + 1]
+        + trailThree[o + 2] * trailThree[o + 2]);
+      const lim = Math.max(rad * ULP_F, TRAIL_TOL);
+      if (mv <= lim) {
+        trailThree[o] = nx; trailThree[o + 1] = ny; trailThree[o + 2] = nz;
+        nFix++; if (mv > maxMove) maxMove = mv;
+      }
+    }
+    if (nFix) console.info(`[trail] collapseMicroSteps: 塌缩 ${nFix} 顶点（最大搬移 ${maxMove.toFixed(2)} km）`);
+  })();
+
+  // ---------- 锚定轨道（schema v2 tracks/anchors：模型定位 ≤1 km） ----------
+  // track = {t f64[n窗], w f64[n窗], c f64[n窗×3×(deg+1)], deg, anchor}；
+  // 每窗口 [t_i, t_i+w_i] 位置 = 切比雪夫（相对锚定体，黄道 km），窗口互不重叠。
+  // anchors = [[a, b, key], ...]：t∈[a,b] 时模型定位走锚定轨道（与天体历表同
+  // 内核派生、f64 全程求值），窗口外回退主轨迹插值（线渲染精度）。
+  const anchorWins = (sc.anchors || [])
+    .map((w) => ({ a: w[0], b: w[1], key: w[2] }))
+    .sort((p, q) => p.a - q.a);
+  const anchorTracks = new Map();
+  for (const tkKey of Object.keys(sc.tracks || {})) {
+    const tk = sc.tracks[tkKey];
+    anchorTracks.set(tkKey, {
+      t: b64ToFloat64(tk.t), w: b64ToFloat64(tk.w), c: b64ToFloat64(tk.c),
+      n: tk.n, deg: tk.deg, anchor: tk.anchor,
+    });
+  }
+  const _anchRel = [0, 0, 0];
+  const _anchBody = [0, 0, 0];
+
+  function anchorEvalAt(tk, t, out) {
+    // Clénshaw 递推（与烘焙端 np.chebval 同约定）；窗口二分（时间有序不重叠）
+    const ts = tk.t, ws = tk.w, c = tk.c, d = tk.deg;
+    let lo = 0, hi = tk.n - 1;
+    if (t <= ts[0]) { lo = 0; }
+    else if (t >= ts[tk.n - 1]) { lo = tk.n - 1; }
+    else {
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (ts[mid] <= t) lo = mid; else hi = mid; }
+    }
+    let x = 2 * (t - ts[lo]) / ws[lo] - 1;
+    if (x < -1) x = -1; else if (x > 1) x = 1;
+    const base = lo * 3 * (d + 1), twoX = 2 * x;
+    for (let k = 0; k < 3; k++) {
+      const o = base + k * (d + 1);
+      let b1 = 0, b2 = 0;
+      for (let j = d; j >= 1; j--) {
+        const b0 = c[o + j] + twoX * b1 - b2;
+        b2 = b1; b1 = b0;
+      }
+      out[k] = c[o] + x * b1 - b2;
+    }
+    return out;
+  }
+
+  /* 锚定体（含父体链）在时刻 t 的黄道位置（km）——相对轨迹帧变换用。
+   * 必须逐点按采样时刻求值，不能复用 registry 的当前帧 world。 */
+  function frameAnchorAt(entry, t, out) {
+    entry.track.at(t, out);
+    if (entry.parent) {
+      const p = registry.get(entry.parent);
+      if (p && p.track) {
+        p.track.at(t, _anchBody);
+        out[0] += _anchBody[0]; out[1] += _anchBody[1]; out[2] += _anchBody[2];
+      }
+    }
+    return out;
+  }
+
   function cassiniPosAt(t, out) {
+    // 锚定轨道优先（模型定位精度）；未命中窗口 → 主轨迹线性插值
+    for (let i = 0; i < anchorWins.length; i++) {
+      const w = anchorWins[i];
+      if (t >= w.a && t <= w.b) {
+        const tk = anchorTracks.get(w.key);
+        const body = tk && registry.get(tk.anchor);
+        if (tk && body && body.track) {
+          anchorEvalAt(tk, t, _anchRel);
+          const v = eclToThree(_anchRel);
+          // 锚定体位置按【采样时刻 t】求值（frameAnchorAt），而非 registry 的
+          // 当前帧 world：动态尾迹以 t 之前的时刻重采样，用当前帧位置会引入
+          // body.world(t_now) − body.world(t_i) 的时变平移（发射段地球 960 s
+          // 位移约 2.9 万 km），使尾迹相对 flown/full 折出近直角。
+          frameAnchorAt(body, t, _anchBody);
+          const b = eclToThree(_anchBody);
+          out[0] = b[0] + v[0];
+          out[1] = b[1] + v[1];
+          out[2] = b[2] + v[2];
+          return out;
+        }
+      }
+    }
     let lo = 0, hi = trailN - 1;
     if (t <= trailT[0]) { lo = 0; hi = 1; }
     else if (t >= trailT[trailN - 1]) { lo = trailN - 2; hi = trailN - 1; }
@@ -209,17 +442,25 @@
     { name: 'neptune', radius: 24622, tex: 'neptune', label: 'Neptune', rings: true, flatten: 0.0171 },
     // 卫星扁率 = (a−c)/a，三轴 limb 拟合取 Thomas (2010, Icarus 208)；金星/太阳 f≈0 不设
     { name: 'moon', radius: 1737.4, tex: 'moon', label: 'Moon', flatten: 0.0012 },
-    { name: 'titan', radius: 2574.7, tex: 'proc:titan', label: 'Titan', atmo: { color: 0xd89550, intensity: 0.65, power: 2.4 }, flatten: 0.0011 },
-    { name: 'enceladus', radius: 252.1, tex: 'proc:enceladus', label: 'Enceladus', flatten: 0.228 },
+    { name: 'titan', radius: 2574.7, tex: 'titan', label: 'Titan',
+      // 泰坦 = 太阳系最浓的卫星大气（地表气压 1.45 atm）：盘缘橙金 rim +
+      // 盘外辉光壳。真实泰坦 limb 为不透明橙霾、可见厚度数倍于类地行星
+      // （Huygens 探空：雾霾层顶 ~500 km ≈ 1.2R）——halo 衰减尺度放慢
+      // （spread），光晕更厚更饱和；壳缘窗口仍精确归零无硬边
+      atmo: { color: 0xd89550, intensity: 0.65, power: 2.4,
+              halo: { color: 0xf0a860, intensity: 1.0, spread: 2.2 } },
+      flatten: 0.0011 },
+    { name: 'enceladus', radius: 252.1, tex: 'enceladus', label: 'Enceladus', flatten: 0.228 },
     // Iapetus：NASA Cassini ISS 真实镶嵌（替换有误的程序化贴图）；texOffset 把暗区
     // （Cassini Regio）质心对齐到轨道前导半球——潮汐锁定下本地 +X（u=0.5）指向
     // Saturn，顺行卫星前导方向 = 本地 +Z = u 0.25；原镶嵌暗区质心 u≈0.2523
     // Iapetus：早期快速自转减速遗留的永久变形，(746−712)/746 ≈ 0.046
     { name: 'iapetus', radius: 734.5, tex: 'iapetus', texOffset: 0.0023, label: 'Iapetus', flatten: 0.046 },
-    { name: 'rhea', radius: 763.8, tex: 'proc:rhea', label: 'Rhea', flatten: 0.0013 },
-    { name: 'dione', radius: 561.4, tex: 'proc:dione', label: 'Dione', flatten: 0.003 },
-    { name: 'tethys', radius: 531.1, tex: 'proc:tethys', label: 'Tethys', flatten: 0.048 },
-    { name: 'mimas', radius: 198.2, tex: 'proc:mimas', label: 'Mimas', flatten: 0.083 },
+    // 土星内卫星：NASA Eyes color 立方面重投影（tools/build_textures.py 烘焙）
+    { name: 'rhea', radius: 763.8, tex: 'rhea', label: 'Rhea', flatten: 0.0013 },
+    { name: 'dione', radius: 561.4, tex: 'dione', label: 'Dione', flatten: 0.003 },
+    { name: 'tethys', radius: 531.1, tex: 'tethys', label: 'Tethys', flatten: 0.048 },
+    { name: 'mimas', radius: 198.2, tex: 'mimas', label: 'Mimas', flatten: 0.083 },
   ];
 
   // 轴倾角 [tilt°, node°]（tiltGroup 定向，欧拉序 YXZ：先绕 X 倾斜、再绕 Y 转到
@@ -275,7 +516,20 @@
   const SUN_INTENSITY = 2.075;
   let skyMesh = null;
   let trailFullLine, trailFlownLine;   // heliocentric frame
-  let leaderLine;                      // trail end -> current position
+  // 动态尾迹（3 张同布局，帧不同）：烘焙顶点节拍最长滞后一拍（巡航 6 h 节拍 ×
+  // 30 km/s = 64.8 万 km 弦），旧单段 leader 直线桥接在回放中弦长锯齿 0→一整弦，
+  // 且锚定轨道激活后弦相对真实路径的矢高差（土星段中位 37 km、极值 1,800 km）
+  // 使轨迹末端绕飞船来回摆动。改为逐帧以 cassiniPosAt 重采样真实路径（与标记/
+  // 模型/相机目标同一函数 → 末端与飞船零相对偏差）：起点 = 修剪后的烘焙末顶点
+  // （同一时刻求值，逐位重合），末端延伸至下一烘焙顶点与 future 线无缝相接。
+  // abs = 日心系；planet/moon = 一级/二级 SOI 相对系（随对应窗口线同步显隐）。
+  let tailAbs, tailPlanet, tailMoon;
+  const TAIL_VERTS = 16;               // 起点顶点 + 11 中间采样 + 当前位置 + 下一顶点 + 余量
+  const TAIL_BASE = [1.0, 0.827, 0.498];
+  const tailTimes = new Float64Array(TAIL_VERTS);   // 日心系采样时刻（f64）
+  const tailPts = new Float64Array(TAIL_VERTS * 3); // 日心系采样位置（f64，three 轴）
+  let tailCount = 0;                   // 本帧有效顶点数
+  let tailIdxTail = 0;                 // 本帧尾迹衔接点（flown 修剪共用，updateRender 前段求值）
   const trailPosBuffer = new Float32Array(trailN * 3);
   let cassiniMarker, cassiniModel, cassiniStack, cassiniOrbiter, huygensMesh;
 
@@ -538,8 +792,11 @@
       shipSunLight.intensity = on ? SUN_INTENSITY : 0;
       forceShadowRefresh = true;
     }
-    // 行星反照光仅真实模式逐帧解算（材质注入项，关闭即置零）
-    if (!on && window.CassiniModel) window.CassiniModel.setShine(null, null, 0);
+    // 行星反照光仅真实模式逐帧解算（材质注入项，关闭即置零，探测器套同归零）
+    if (!on && window.CassiniModel) {
+      window.CassiniModel.setShine(null, null, 0);
+      window.CassiniModel.setProbeShine(null, null, 0);
+    }
     if (window.CassiniModel) window.CassiniModel.setSunMode(on);
   }
 
@@ -688,26 +945,34 @@
     return c;
   }
 
-  /* 太阳光晕壳层（NASA Eyes 风格）：按“视线到日心的瞄准距离 b”（日面半径归一）
-   * 计算径向衰减，球面几何在任意视距下稳定（无广告牌近裁剪切边），日面圆盘
-   * 自然遮挡中心亮核。双层剖面（mode）：
-   *   inner（2.6R 壳）——色球/内冕：贴日缘亮暖晕 = 色球窄指数 exp(-9s) + 内冕
-   *     缓指数 exp(-2.3s)（s = b-1，日缘外距离）；
-   *   outer（7R 壳）——外冕长晕：慢指数 exp(-0.85s) + 世界空间角向冕流
-   *     （整数次谐波 sin 叠加，2π 连续、随太阳而非相机固定，赤道带权重）。
-   * 两壳壳缘 smoothstep 窗口精确归零，消除旧版高斯剖面在壳缘的硬切边。
+  /* 太阳光晕壳层：按“视线到日心的瞄准距离 b”（日面半径归一）计算径向衰减。
+   * 球面几何在任意视距下稳定（无广告牌近裁剪切边），日面圆盘自然遮挡中心亮核。
+   *
+   * 剖面为严格各向同性——只随 b 变化，与方位角/世界坐标无关，因此各视距下
+   * 都是一圈均匀晕环，不存在旧版角向冕流造成的明暗扇区。
+   *
+   * 剖面为「日缘锚定的指数和」（s = b−1，日缘外距离），衰减全程指数：
+   *   inner（2.6R 壳）——色球亮环 0.95·exp(−10s) + 内冕 0.40·exp(−3.2s)：
+   *     白核（叠加值 >1 的饱和区）在 s≈0.07R 内就降到 1 以下 → 亮球与光球层
+   *     同大，不再出现旧版白核外扩到 2.1R 的「内部亮球」；
+   *   outer（7R 壳）——外冕 0.20·exp(−s/2)：单一长指数，柔和弥散到 ~6R。
+   *
+   * 幅度标定在**原始帧缓冲空间**：ShaderMaterial 无 encodings_fragment（输出
+   * 不做线性→sRGB 换算），叠加结果即屏幕值，饱和阈值为 1.0。日缘总量
+   * 1.35+0.20=1.55 → 贴缘一圈白环；s=0.08 处已 <1 → 白核≈日面。
+   * 指数在两壳壳缘处已衰减到 ~1e-2 以下，win 窗口（1−x⁶）只负责最后归零，
+   * 无同心接缝；旧版幂律 x^-1.5 在 7R 壳内衰减慢、观感近似线性渐变，已弃用。
    * 含 logdepthbuf chunk：与对数深度缓冲的圆盘/行星正确做深度判定。 */
   function sunGlowShellMaterial(opt) {
     const profile = opt.mode === 'outer'
-      ? `float s = max(b - 1.0, 0.0);
-         float g = exp(-s * 0.85) * uI;
-         vec3 nrm = normalize(vW - vSunC);
-         float ang = atan(nrm.z, nrm.x);
-         float belt = 1.0 - abs(nrm.y);
-         float str = sin(ang * 7.0 + 1.3) * 0.55 + sin(ang * 13.0 + 4.1) * 0.30 + sin(ang * 23.0 + 2.8) * 0.15;
-         g *= 1.0 + uStrAmp * str * belt;`
-      : `float s = max(b - 1.0, 0.0);
-         float g = (0.60 * exp(-s * 9.0) + 0.42 * exp(-s * 2.3)) * uI;`;
+      ? `float x = clamp(b / uEdge, 0.0, 1.0);
+         float s = max(b - 1.0, 0.0);
+         // 外冕：单一长指数（τ=2R），柔和弥散
+         float g = 0.20 * exp(-s * 0.5);`
+      : `float x = clamp(b / uEdge, 0.0, 1.0);
+         float s = max(b - 1.0, 0.0);
+         // 色球亮环（τ=0.1R，白核止于日缘）+ 内冕（τ≈0.31R）
+         float g = 0.95 * exp(-s * 10.0) + 0.40 * exp(-s * 3.2);`;
     return new THREE.ShaderMaterial({
       uniforms: {
         uR: { value: opt.rSun },
@@ -715,7 +980,6 @@
         uColor: { value: new THREE.Color(opt.color) },
         uFade: { value: 1.0 },
         uEdge: { value: opt.shell },
-        uStrAmp: { value: 0.45 },
       },
       vertexShader: `
         varying vec3 vW; varying vec3 vSunC;
@@ -729,7 +993,7 @@
         }`,
       fragmentShader: `
         uniform float uR; uniform float uI; uniform vec3 uColor; uniform float uFade;
-        uniform float uEdge; uniform float uStrAmp;
+        uniform float uEdge;
         varying vec3 vW; varying vec3 vSunC;
         #include <common>
         #include <logdepthbuf_pars_fragment>
@@ -740,7 +1004,8 @@
           float tP = dot(oc, D);
           float b = length(oc - D * tP) / uR;   // 瞄准距离（日面半径归一）
           ${profile}
-          float win = 1.0 - smoothstep(uEdge * 0.62, uEdge, b);   // 壳缘窗口归零
+          // 壳缘窗口：只做最后归零，高次幂在 x<0.9 处几乎不改变指数剖面
+          float win = 1.0 - pow(x, 6.0);
           gl_FragColor = vec4(uColor * max(g * win * uFade, 0.0), 1.0);
         }`,
       side: opt.side,
@@ -774,6 +1039,10 @@
         uFlat: { value: opt.flat || 0 },
         uPolar: { value: opt.polar || new THREE.Vector3(0, 1, 0) },
         uSunPos: { value: new THREE.Vector3() },
+        // 外视 limb 霾的双指数衰减尺度（1/R）：spread > 1 放慢衰减——浓霾
+        // 天体（泰坦）光晕更厚更饱和，壳缘窗口仍归零
+        uK1: { value: 200.0 / (opt.spread || 1) },
+        uK2: { value: 70.0 / (opt.spread || 1) },
       },
       vertexShader: `
         varying vec3 vW; varying vec3 vBodyC;
@@ -788,7 +1057,7 @@
       fragmentShader: `
         uniform float uR; uniform float uI; uniform vec3 uColor;
         uniform float uEdge; uniform float uFlat; uniform vec3 uPolar;
-        uniform vec3 uSunPos;
+        uniform vec3 uSunPos; uniform float uK1; uniform float uK2;
         varying vec3 vW; varying vec3 vBodyC;
         #include <common>
         #include <logdepthbuf_pars_fragment>
@@ -811,13 +1080,13 @@
           float b = rc / rDir;                          // 瞄准距离（星表=1）
           float s = max(b - 1.0, 0.0);
           // 外视剖面：真实 limb 霾是薄层（可见厚度 ~1–2% 行星半径），取 0.5% /
-          // 1.4%R 两个指数衰减尺度；旧 8.0/2.0 的尺度在 4.5% 壳内几乎不衰减，
-          // 整段被 win 窗口硬切，观感过厚过亮。窗口起点必须是 1.0——取
-          // uEdge*0.55 会在峰值处先行衰减 40 倍
+          // 1.4%R 两个指数衰减尺度（uK1/uK2，浓霾天体经 spread 放慢）；旧
+          // 8.0/2.0 的尺度在 4.5% 壳内几乎不衰减，整段被 win 窗口硬切，观感
+          // 过厚过亮。窗口起点必须是 1.0——取 uEdge*0.55 会在峰值处先行衰减 40 倍
           float outG = smoothstep(1.03, 1.20, dN);
-          float gOut = (0.85 * exp(-s * 200.0) + 0.30 * exp(-s * 70.0)) * outG;
+          float gOut = (0.85 * exp(-s * uK1) + 0.30 * exp(-s * uK2)) * outG;
           float win = 1.0 - smoothstep(1.0, uEdge, b);
-          // 内视地平雾带：视线前方穿过大气层（星表→壳顶）的弦长 × 指数密度
+          // 内视地平雾带：视线前方穿过大气层（星表→壳顶）的前向弦长 × 指数密度
           // （标高 uH≈0.012R）——地平线切向弦长最长且贴近星表（亮带），视线
           // 抬高后弦段中点高度上升、密度骤降，天空快速转黑，贴近真实观感
           float rEdge = uEdge * rDir;
@@ -825,11 +1094,22 @@
           float xIn  = sqrt(max(rDir  * rDir  - rc * rc, 0.0));
           float sCam = sqrt(max(dCam * dCam - rc * rc, 0.0));
           float tCam = dot(D, normalize(oc)) > 0.0 ? sCam : -sCam; // 最近点在前为正
-          float tA = max(tCam - xIn, 0.0);
-          float chordSeg = max(tCam + xOut - tA, 0.0);
-          float rMid = sqrt(rc * rc + (tCam - 0.5 * (tA + tCam + xOut)) * (tCam - 0.5 * (tA + tCam + xOut)));
-          float chord = chordSeg / rEdge * exp(-(rMid / rDir - 1.0) / 0.006);
-          float inG = 1.0 - smoothstep(1.06, 1.26, dN);
+          // 前向弦段 = 视线与大气环带 [rDir, rEdge] 交集且 t ≥ 0：
+          //   星表外（含大气内）：[max(tCam − xIn, 0), tCam + xOut]；
+          //   星表内（坠入穿模）：[tCam + xIn, tCam + xOut]——视线先穿出星表
+          //   才进入大气。旧式对星表内相机仍取 tCam − xIn（负值 → 段起点 0），
+          //   整条穿行星路径被计入弦长且弦段中点 rMid 深入星体 → 密度项
+          //   exp(+80) 量级爆炸 → 加色壳失去盘面遮挡后整屏泛白
+          float tA = dCam < rDir ? tCam + xIn : max(tCam - xIn, 0.0);
+          float tB = tCam + xOut;
+          float chordSeg = max(tB - tA, 0.0);
+          float rMid = sqrt(rc * rc + (tCam - 0.5 * (tA + tB)) * (tCam - 0.5 * (tA + tB)));
+          // 密度项钳底于星表密度：rMid 落入星体内部时（理论上该方向已被不透明
+          // 盘面遮挡）不再指数放大，任何深度/剔除竞态下都不会爆白
+          float chord = chordSeg / rEdge * exp(-(max(rMid / rDir, 1.0) - 1.0) / 0.006);
+          // 星表以下（坠入穿模）内视剖面整体淡出：地表之下没有天空，不应残留
+          // 大气雾带
+          float inG = (1.0 - smoothstep(1.06, 1.26, dN)) * smoothstep(0.995, 1.0, dN);
           // 内视增益（8）配标高 0.006R（~350 km，介于真实 ~80 km 与观感之间）：
           // 贴轮廓掠射线的 rMid 贴近星表、密度项≈1，弦长 0.3R——增益过大时
           // 整条地平带饱和成白墙；标高减半把亮带收紧到轮廓附近，天空只剩
@@ -1165,13 +1445,15 @@
       }
 
       if (def.name === 'sun') {
-        // 双层光晕壳：内壳 = 色球/内冕贴缘亮暖晕（2.6R，盘缘增亮在日面材质内做）；
-        // 外壳 = 外冕长晕 + 冕流（7R）。壳缘窗口归零无硬边；相机临近时 uFade 淡出
+        // 双层光晕壳：内壳 = 色球/内冕均匀亮晕（2.6R，盘缘增亮在日面材质内做）；
+        // 外壳 = 外冕弥散长晕（7R）。剖面严格各向同性（只随瞄准距离 b 变化），
+        // 壳缘窗口只做最后归零 → 各视距下均匀晕环，无角向明暗扇区与同心接缝；
+        // 相机临近时 uFade 淡出（阈值见逐帧更新，随各自壳半径）
         const glowInner = new THREE.Mesh(
           new THREE.SphereGeometry(1, 48, 24),
           sunGlowShellMaterial({
             rSun: def.radius, mode: 'inner', shell: 2.6,
-            intensity: 1.5, color: 0xfff0be, side: THREE.BackSide,
+            intensity: 1.0, color: 0xfff2c6, side: THREE.BackSide,
           }));
         glowInner.scale.setScalar(def.radius * 2.6);
         glowInner.renderOrder = 1;
@@ -1180,7 +1462,7 @@
           new THREE.SphereGeometry(1, 64, 32),
           sunGlowShellMaterial({
             rSun: def.radius, mode: 'outer', shell: 7.0,
-            intensity: 0.5, color: 0xfff6d8, side: THREE.BackSide,
+            intensity: 1.0, color: 0xfff6d8, side: THREE.BackSide,
           }));
         glowOuter.scale.setScalar(def.radius * 7.0);
         glowOuter.renderOrder = 1;
@@ -1377,6 +1659,9 @@
         window.HuygensVis.init({
           scene, registry, eclToThree, cassiniPosAt, markerTexture, viewOccluded, modelFadeK,
           trailOpts: () => trailOptions,
+          // 分离前组合体姿态（Cassini 体轴 → 惯性系）：探测器按真实结构挂点
+          // 定位到组合体上需要与母船同姿态，随真实姿态回放逐帧更新
+          cassiniQuatAt: () => _attQ,
         }, huygensMesh);
       }
     });
@@ -1403,12 +1688,29 @@
     scene.add(trailFlownLine);
 
     const gLead = new THREE.BufferGeometry();
-    gLead.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3).setUsage(THREE.DynamicDrawUsage));
-    leaderLine = new THREE.Line(gLead, new THREE.LineBasicMaterial({
-      color: 0xffd37f, transparent: true, opacity: 0.9, depthWrite: false,
+    gLead.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TAIL_VERTS * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    gLead.setAttribute('color', new THREE.BufferAttribute(new Float32Array(TAIL_VERTS * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    tailAbs = new THREE.Line(gLead, new THREE.LineBasicMaterial({
+      color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.95, depthWrite: false,
     }));
-    leaderLine.frustumCulled = false;
-    scene.add(leaderLine);
+    tailAbs.frustumCulled = false;
+    scene.add(tailAbs);
+    // 一级/二级 SOI 相对系尾迹：帧变换在 updateTrailTail 内逐帧求值（行星当前位置
+    // − 历表轨迹），顶点色与 abs 尾迹同批次写入；透明度随对应窗口线同步（updateSoiTrails）
+    const mkTail = () => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TAIL_VERTS * 3), 3).setUsage(THREE.DynamicDrawUsage));
+      g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(TAIL_VERTS * 3), 3).setUsage(THREE.DynamicDrawUsage));
+      const line = new THREE.Line(g, new THREE.LineBasicMaterial({
+        color: 0xffffff, vertexColors: true, transparent: true, opacity: 0, depthWrite: false,
+      }));
+      line.frustumCulled = false;
+      line.visible = false;
+      scene.add(line);
+      return line;
+    };
+    tailPlanet = mkTail();
+    tailMoon = mkTail();
   }
 
   /* SOI 相对轨迹几何构建：窗口 = 主轨迹时间域子区间，顶点 = 行星锚定世界坐标
@@ -1431,24 +1733,33 @@
           a = t[0]; b = t[t.length - 1];
         } else continue;
         // 窗口内轨迹顶点区间 [i0, i0+n)
-        const i0 = Math.min(idxGte(trailT, a - 1.0), trailN - 2);
+        let i0 = Math.min(idxGte(trailT, a - 1.0), trailN - 2);
         let i1 = idxGte(trailT, b + 1.0) - 1;         // 最后一个 t <= b 的顶点
         i1 = Math.max(i1, i0 + 1);
-        const n = i1 - i0 + 1;
-        // rel(t_i) = merged(t_i) − 锚定体历表位置（f64，逐位对齐烘焙端口径）
-        const rel = new Float64Array(n * 3);
-        for (let i = 0; i < n; i++) {
-          const ti = trailT[i0 + i];
-          entry.track.at(ti, tmpV);
-          let ax = tmpV[0], ay = tmpV[1], az = tmpV[2];
-          if (parentEntry) {
-            parentEntry.track.at(ti, tmpV);
-            ax += tmpV[0]; ay += tmpV[1]; az += tmpV[2];
+        let n = i1 - i0 + 1;
+        // rel(t_i)：优先用烘焙端 f64 直算的相对几何（去锚小量，f32 无损）。
+        // 回退路径（旧数据）：rel = trailThree(f32 日心) − 锚定体日心，
+        // 会继承 f32 日心坐标量化误差（土星段 ULP 128 km → 相对轨迹 ±111 km 错位）。
+        let rel, rel0 = null;
+        if (wr && wr.rel && wr.i0 !== undefined && wr.n && wr.rel0) {
+          i0 = wr.i0; n = wr.n;
+          rel = b64ToFloat32(wr.rel);
+          rel0 = b64ToFloat64(wr.rel0);          // 窗口锚点（f64，3 个数）
+        } else {
+          rel = new Float64Array(n * 3);
+          for (let i = 0; i < n; i++) {
+            const ti = trailT[i0 + i];
+            entry.track.at(ti, tmpV);
+            let ax = tmpV[0], ay = tmpV[1], az = tmpV[2];
+            if (parentEntry) {
+              parentEntry.track.at(ti, tmpV);
+              ax += tmpV[0]; ay += tmpV[1]; az += tmpV[2];
+            }
+            const g = (i0 + i) * 3;
+            rel[i * 3] = trailThree[g] - ax;
+            rel[i * 3 + 1] = trailThree[g + 1] - az;    // ecl→three: y=z, z=-y
+            rel[i * 3 + 2] = trailThree[g + 2] + ay;
           }
-          const g = (i0 + i) * 3;
-          rel[i * 3] = trailThree[g] - ax;
-          rel[i * 3 + 1] = trailThree[g + 1] - az;    // ecl→three: y=z, z=-y
-          rel[i * 3 + 2] = trailThree[g + 2] + ay;
         }
         const pos = new Float32Array(n * 3);
         const gFull = new THREE.BufferGeometry();
@@ -1468,33 +1779,33 @@
         flown.frustumCulled = false; flown.visible = false;
         scene.add(flown);
         wins.push({
-          a, b, i0, n, times: trailT.subarray(i0, i1 + 1), rel, full, flown, colAttr,
-          built: false, o: { x: 0, y: 0, z: 0 }, pRef: { x: 0, y: 0, z: 0 },
+          a, b, i0, n, times: trailT.subarray(i0, i1 + 1), rel, rel0, full, flown, colAttr,
+          built: false, pRef: { x: 0, y: 0, z: 0 },
         });
       }
       if (wins.length) soiPlanets.set(name, { entry, wins });
     }
   }
 
-  /* 窗口缓冲重建：buf_i = f32(行星参考位置 pRef + rel_i − 原点 o)。
-   * 近相机顶点值 ~ 相机距飞船的量级 → f32 亚像素；行星后续移动由对象位置
-   * 逐帧补偿（o − cam + planet_now − pRef），无需逐帧重写顶点。 */
-  function rebuildSoiWindow(w, entry) {
+  /* 窗口缓冲构建（**一次性**，与相机、行星位置均无关）：
+   *   buf_i = rel_i − rel0        （f32；−rel0 后 |buf| ≤ 窗口内飞船偏移跨度，
+   *                                土星窗 ULP ≤ ~0.4 km，卫星窗 ~1e-3 km）
+   * 渲染世界坐标由对象位置逐帧在 f64 中给出：
+   *   line.position = 锚定体当前 + rel0 − camWorld
+   *   ⇒ 渲染位置 ≡ 锚定体当前 + rel_i（相对系语义）− cam，与缩放级别无关。
+   *
+   * 旧实现把 camWorld 当缓冲原点（buf = planet_ref + rel − camWorld）：
+   * 远视角 |buf| 达 1e9..1e10 km → f32 ULP 64..700 km，且阈值触发下远视角
+   * 每帧都满足重建条件、每帧以新相机原点重写 38 万顶点 → 量化台阶逐帧跳变，
+   * 整条相对轨迹相对行星/主轨迹可见错位（用户反馈「远视角滑动视角时轨迹错位」）。
+   * 新设计缓冲不含相机量 → 永不重建，该缺陷在结构上不可能发生。 */
+  function buildSoiWindow(w) {
     const arr = w.full.geometry.attributes.position.array;
-    const px = entry.world[0], py = entry.world[1], pz = entry.world[2];
-    const ox = camWorld.x, oy = camWorld.y, oz = camWorld.z;
-    for (let i = 0; i < w.n; i++) {
-      const g = i * 3;
-      arr[g] = px + w.rel[g] - ox;
-      arr[g + 1] = py + w.rel[g + 1] - oy;
-      arr[g + 2] = pz + w.rel[g + 2] - oz;
-    }
+    for (let i = 0; i < w.n * 3; i++) arr[i] = w.rel[i];
     // full/flown 两个 BufferAttribute 包裹同一数组但各自持有独立 GPU 缓冲，
-    // 必须双双标记上传——否则 flown 永远渲染建窗时的全零缓冲（轨迹不可见）
+    // 必须双双标记上传——否则 flown 永远渲染全零缓冲（轨迹不可见）
     w.full.geometry.attributes.position.needsUpdate = true;
     w.flown.geometry.attributes.position.needsUpdate = true;
-    w.o.x = ox; w.o.y = oy; w.o.z = oz;
-    w.pRef.x = px; w.pRef.y = py; w.pRef.z = pz;
     w.built = true;
   }
 
@@ -1515,6 +1826,12 @@
     const oz = trailOrigin.z - camWorld.z;
     trailFullLine.position.set(ox, oy, oz);
     trailFlownLine.position.set(ox, oy, oz);
+    // 动态尾迹与主轨迹共用同一浮动原点（顶点缓冲 = [世界 − trailOrigin]，
+    // 见 writeTailLine）。位置必须逐帧同步——否则远视角下尾迹以 f32 绝对
+    // 坐标抖动（量化步长可达数十 km），而主轨迹稳定，两者相对抖动明显。
+    tailAbs.position.set(ox, oy, oz);
+    tailPlanet.position.set(ox, oy, oz);
+    tailMoon.position.set(ox, oy, oz);
     // SOI 窗口线的位置由 updateSoiTrails 逐帧设置（行星锚定 + 浮动原点补偿）
     const dx = camWorld.x - trailOrigin.x;
     const dy = camWorld.y - trailOrigin.y;
@@ -1526,6 +1843,7 @@
     trailOrigin.x = camWorld.x;
     trailOrigin.y = camWorld.y;
     trailOrigin.z = camWorld.z;
+    // 原点已跳变：主轨迹缓冲重写，尾迹缓冲由 updateTrailTail 逐帧重写（同基准）
     const arr = trailPosBuffer;
     for (let i = 0; i < trailN * 3; i += 3) {
       arr[i] = trailThree[i] - camWorld.x;
@@ -1534,17 +1852,118 @@
     }
     trailFullLine.geometry.attributes.position.needsUpdate = true;
     trailFlownLine.geometry.attributes.position.needsUpdate = true;
-    // SOI 窗口缓冲为行星锚定（planet_ref + rel），其重建由 updateSoiTrails
-    // 按"原点漂移 + 行星漂移"触发（见 rebuildSoiWindow / soiWindowBound）
+    // SOI 窗口缓冲为锚定体相对量（rel − rel0），与相机/行星位置无关 → 永不重建
   }
 
-  /* 窗口缓冲重建阈值：与主轨迹同一判据（近处顶点 f32 量化折角 < ~1px）。
-   * 行星自身漂移同样计入——相对轨迹锚定在行星当前位置，行星移动即等效
-   * 原点漂移。 */
-  function soiWindowBound() {
-    const dEff = (window.CassiniCamera && window.CassiniCamera.state)
-      ? window.CassiniCamera.state.sDist : 4.2e6;
-    return Math.min(Math.max(dEff * 2000, 1e3), 5e5);
+  /* 动态尾迹逐帧更新（在 updateSoiTrails 之后调用，可读 soiState 与活动窗口）：
+   * 以 cassiniPosAt（与标记/模型/相机目标同一位置函数）重采样 [衔接点, t]，
+   * 末端延伸至下一烘焙顶点与 future 线衔接——尾迹与飞船零相对偏差。三张尾迹
+   * 各自独立时间网格：abs 从 trailT[idxTail] 起；一级/二级相对系从
+   * max(trailT[idxTail], win.a) 起（窗口前不画，且起点与窗口线首顶点逐位一致）。
+   * 相对系帧变换 = 锚定体当前位置 − 历表轨迹(t_i)（与窗口线同一锚定语义）；
+   * 颜色与 flown 线同式年龄淡出；延伸段远端按所属 future 线颜色补偿，色界融入渐变。 */
+  /* 动态尾迹逐帧更新（在 updateSoiTrails 之后调用，可读 soiState 与活动窗口）：
+   * 以 cassiniPosAt（与标记/模型/相机目标同一位置函数）重采样 [衔接点, t]，
+   * 末端终止于【当前时刻 t 本身】（即标记处）——past/tail 全段金色，future 线
+   * 自 t 起为蓝色，颜色在飞船处硬切换，中间无过渡段。三张尾迹各自独立时间
+   * 网格：abs 从 trailT[idxTail] 起；一级/二级相对系从 max(trailT[idxTail], win.a)
+   * 起。相对系帧变换 = 锚定体在【各自采样时刻】的位置（见 frameAnchorAt）——
+   * 用当前帧位置会引入时变平移使尾迹折曲。 */
+  const _tailP = [0, 0, 0];
+  function updateTrailTail(t, cassTrail, trailK) {
+    const show = cassTrail && trailK > 0.01;
+    const recent = trailOptions.mode === 'recent';
+    // —— abs（日心系）：网格起点 = 修剪后的烘焙末顶点，终点 = 当前时刻 ——
+    let n = 0;
+    if (show) {
+      const tTail = trailT[tailIdxTail];
+      for (let j = 0; j <= 11; j++) {
+        tailTimes[n] = tTail + (t - tTail) * (j / 11);
+        cassiniPosAt(tailTimes[n], _tailP);
+        tailPts[n * 3] = _tailP[0]; tailPts[n * 3 + 1] = _tailP[1]; tailPts[n * 3 + 2] = _tailP[2];
+        n++;
+      }
+      tailAbs.visible = true;
+      writeTailLine(tailAbs, 0, n, t, recent, null);
+    } else {
+      tailAbs.visible = false;
+    }
+    tailCount = n;
+    // —— 一级（行星 SOI）/ 二级（卫星 SOI）相对系 ——
+    updateRelTail(tailPlanet, soiState.name, t, show);
+    updateRelTail(tailMoon, soiState.moon, t, show);
+  }
+
+/* 尾迹线写出：times/位置已在共享数组 [i0, i1)，帧变换 frameBody 非空时按
+ * 锚定体【该采样时刻】的位置 − 历表轨迹(t_i) 平移（frameBody.world 仅
+ * 对当前帧 t 有效，故此处逐点按 tailTimes[i] 求值）；颜色 = flown 同式
+ * 年龄淡出。tail 全段一律金色，与 future 线在飞船处硬切换——不做单顶点
+ * 蓝色补偿（那会在末端形成一段金→蓝渐变，即"颜色过渡"）。
+ *
+ * 浮动原点：与主轨迹同为 [世界 − trailOrigin]，线对象 position = trailOrigin − cam
+ * （由 rebaseTrail 逐帧设置）。**不可**直接写 [世界 − camWorld]：远视角下
+ * |世界 − cam| 达 5e8 km，f32 量化步长 32 km，相机绕转时顶点逐帧在量化桶间
+ * 跳变 → 尾迹相对主轨迹（量化基准被 bound 钳在 5e5 km，步长 0.03 km）持续
+ * 抖动。统一基准后两者量化误差同阶，相对抖动消除。 */
+function writeTailLine(line, i0, i1, t, recent, frameBody) {
+  const arr = line.geometry.attributes.position.array;
+  const col = line.geometry.attributes.color.array;
+  const o = trailOrigin;
+  for (let i = i0; i < i1; i++) {
+    const g = i * 3;
+    let x = tailPts[g], y = tailPts[g + 1], z = tailPts[g + 2];
+    if (frameBody) {
+      // 相对轨迹帧变换：rel(t_i) = tailPts(t_i) − 锚定体世界位置(t_i)，
+      // 再锚到锚定体【当前】世界位置。两项都须按各自时刻求值——
+      // 用当前帧的 frameBody.world 代替 (t_i) 会引入时变平移（发射段
+      // 地球 960 s 位移 ~2.9 万 km），使尾迹相对 flown/full 折出近直角。
+      frameAnchorAt(frameBody, tailTimes[i], _anchBody);   // 体心 @ t_i
+      const wPast = eclToThree(_anchBody);
+      frameAnchorAt(frameBody, t, _anchBody);              // 体心 @ t_now
+      const wNow = eclToThree(_anchBody);
+      x += wNow[0] - wPast[0];
+      y += wNow[1] - wPast[1];
+      z += wNow[2] - wPast[2];
+    }
+    arr[g] = x - o.x;
+    arr[g + 1] = y - o.y;
+    arr[g + 2] = z - o.z;
+    const age = t - tailTimes[i];
+    const f = fadeFactor(age) * (recent ? recentFactor(age) : 1);
+    col[g] = f * TAIL_BASE[0];
+    col[g + 1] = f * TAIL_BASE[1];
+    col[g + 2] = f * TAIL_BASE[2];
+  }
+  line.geometry.attributes.position.needsUpdate = true;
+  line.geometry.attributes.color.needsUpdate = true;
+  line.geometry.setDrawRange(i0, i1 - i0);
+  line.visible = true;
+}
+
+  /* 一级/二级相对系尾迹：锚定体无活动窗口（k≈0 或 t 在窗口时间域外）时隐藏，
+   * 与窗口线同步；网格起点 = max(trailT[idxTail], win.a)，与窗口 flown 修剪端衔接 */
+  function updateRelTail(line, bodyName, t, show) {
+    line.visible = false;
+    if (!show || !bodyName || line.material.opacity <= 0.01) return;
+    const sp = soiPlanets.get(bodyName);
+    if (!sp) return;
+    const win = soiWindowAt(sp, t);
+    if (!win) return;
+    const recent = trailOptions.mode === 'recent';
+    const t0 = Math.max(trailT[tailIdxTail], win.a);
+    let n = 0;
+    for (let j = 0; j <= 11; j++) {
+      const ti = t0 + (t - t0) * (j / 11);
+      if (ti > win.b) break;
+      tailTimes[n] = ti;
+      cassiniPosAt(ti, _tailP);
+      tailPts[n * 3] = _tailP[0]; tailPts[n * 3 + 1] = _tailP[1]; tailPts[n * 3 + 2] = _tailP[2];
+      n++;
+    }
+    if (n < 2) return;
+    // 尾迹终点 = 当前时刻 t（标记处）；future 线自窗口内下一烘焙顶点起画，
+    // 颜色在飞船附近硬切换，无渐变过渡段。
+    writeTailLine(line, 0, n, t, recent, sp.entry);
   }
 
   /* trail fades with age (vertex colors) */
@@ -1741,15 +2160,27 @@
     rebaseTrail();
     const idxNow = trailIndexAt(t);
     const cassTrail = trailOptions.cassini;
+    // 动态尾迹衔接点：span = 3 个局部节拍（clamp [900s, 64800s]）。三张 flown 线
+    // 修剪到 idxTail，其后的末端段由动态尾迹接管（updateTrailTail，与标记/模型/
+    // 相机目标同一位置函数逐帧重采样 → 尾迹与飞船零相对偏差，烘焙节拍的末端
+    // 弦摆动与锚定轨道激活后的矢高差摆动从此消除）
+    const cadence = idxNow > 0 ? Math.max(1, trailT[idxNow] - trailT[idxNow - 1]) : 900;
+    const span = Math.min(Math.max(3 * cadence, 900), 64800);
+    let idxTail = trailIndexAt(t - span);
+    if (idxTail >= idxNow) idxTail = Math.max(0, idxNow - 1);
+    tailIdxTail = idxTail;
     trailFullLine.visible = cassTrail && trailOptions.future && trailK > 0.01;
     if (trailFullLine.visible) {
-      trailFullLine.geometry.setDrawRange(idxNow, Math.max(0, trailN - idxNow));
+      // 首弦 [idxNow → idxNow+1] 由尾迹延伸段接管（锚定轨道激活时按真实路径绘制），
+      // future 线从 idxNow+1 起画，衔接点逐位重合
+      trailFullLine.geometry.setDrawRange(idxNow + 1, Math.max(0, trailN - (idxNow + 1)));
     }
-    trailFlownLine.visible = cassTrail && trailK > 0.01;
+    const startIdx = trailOptions.mode === 'recent' ? lowerBound(trailT, t - RECENT_SPAN) : 0;
+    const flownCount = idxTail + 1 - startIdx;
+    trailFlownLine.visible = cassTrail && trailK > 0.01 && flownCount >= 2;
     if (trailFlownLine.visible) {
-      const startIdx = trailOptions.mode === 'recent' ? lowerBound(trailT, t - RECENT_SPAN) : 0;
-      trailFlownLine.geometry.setDrawRange(startIdx, Math.max(2, idxNow + 1 - startIdx));
-      applyTrailFade(trailFlownLine, trailT, t, [1.0, 0.827, 0.498], idxNow + 1, startIdx);
+      trailFlownLine.geometry.setDrawRange(startIdx, flownCount);
+      applyTrailFade(trailFlownLine, trailT, t, TAIL_BASE, idxTail + 1, startIdx);
     }
 
     // ---- SOI 相对行星轨迹（item 3）----
@@ -1761,14 +2192,17 @@
     if (realisticOn && window.CassiniModel) {
       let fC = eclipseFactor(_cassWorld);
       let fH = fC;
+      let hw = null;
       if (window.HuygensVis) {
-        const hw = window.HuygensVis.tryWorldAt(t);
+        hw = window.HuygensVis.tryWorldAt(t);
         if (hw) fH = eclipseFactor(hw);
       }
       window.CassiniModel.setEclipse(fC, fH);
       // 行星反照光：不受掩食因子直接调制——采样面元自带局地光照权重，
-      // 飞船进入本影时看到的正是行星夜面，反照光随采样变暗自然熄灭
-      updatePlanetShine();
+      // 飞船进入本影时看到的正是行星夜面，反照光随采样变暗自然熄灭。
+      // 分离后的惠更斯位置一并传入：探测器按自身位置独立解算（未分离为
+      // null，挂于组合体走轨道器那套 uniforms）
+      updatePlanetShine(t >= HUYGENS_SEP_ET ? hw : null);
     }
 
     // ---- Cassini marker + model（真实尺寸缩放 + 真实姿态）----
@@ -1796,7 +2230,7 @@
       cassiniStack.visible = !sep;
       cassiniOrbiter.visible = sep;
     }
-    if (window.HuygensVis) window.HuygensVis.update(t, camWorld, projScale, hPx, modelFade);
+    if (window.HuygensVis) window.HuygensVis.update(t, camWorld, projScale, hPx, modelFade, trailOrigin);
 
     // —— 飞船自阴影（真实光照模式）：平行光对准太阳 + 阴影贴图按需重绘 ——
     // 光源/目标均置于相机相对系（浮动原点），方向 = 飞船→太阳。阴影贴图内容
@@ -1825,15 +2259,8 @@
       }
     }
 
-    // 引导线段：轨迹末端 → 当前位置
-    leaderLine.geometry.attributes.position.setXYZ(0,
-      trailThree[idxNow * 3] - camWorld.x,
-      trailThree[idxNow * 3 + 1] - camWorld.y,
-      trailThree[idxNow * 3 + 2] - camWorld.z);
-    leaderLine.geometry.attributes.position.setXYZ(1,
-      cassWorld[0] - camWorld.x, cassWorld[1] - camWorld.y, cassWorld[2] - camWorld.z);
-    leaderLine.geometry.attributes.position.needsUpdate = true;
-    leaderLine.visible = cassTrail && idxNow < trailN - 1 && trailK > 0.01;
+    // 动态尾迹：轨迹末端实时跟随当前位置（在 updateSoiTrails 之后，需 soiState 与活动窗口）
+    updateTrailTail(t, cassTrail, trailK);
 
     // glows fade when close; mini markers for sub-pixel bodies
     for (const [name, entry] of registry) {
@@ -1854,13 +2281,16 @@
         if (entry.clouds) entry.clouds.material.color.setScalar(dim);
       }
       if (entry.glowShell) {
-        // 相机进入光晕壳内时淡出，避免暖纱遮蔽星空（内外壳阈值随各自壳半径）
+        // 相机进入光晕壳内时淡出，避免暖纱遮蔽星空（内外壳阈值随各自壳半径：
+        // 内壳 2.6R 在 1.5R 起淡（原值即为此，壳半径未变故不动）；外壳 7R 的
+        // 原阈值 (d/r-2.4)/4.6 → 2.4R 起淡、7.0R 才满亮，而旧壳缘正是 7.0R，
+        // 导致 2.6~7R 区间外套色被误压暗，现改到 1.9R 起淡）
         const r = entry.radius;
         entry.glowShell.material.uniforms.uFade.value =
           Math.min(1, Math.max(0, (d / r - 1.5) / 1.1));
         if (entry.glowShellOuter) {
           entry.glowShellOuter.material.uniforms.uFade.value =
-            Math.min(1, Math.max(0, (d / r - 2.4) / 4.6));
+            Math.min(1, Math.max(0, (d / r - 1.9) / 3.0));
         }
       }
       // 大气辉光壳无逐帧 uniform：外视/内视剖面按相机高度在 shader 内交接
@@ -1877,9 +2307,12 @@
             entry.world[2] - camWorld.z);
           entry.miniMarker.scale.set(ws, ws, 1);
           entry.miniMarker.material.opacity = mp.op0 + (mp.op1 - mp.op0) * (f / mp.size);
-          // 遮挡剔除：天体被更近行星挡住时亮点一并隐藏（太阳标记 depthTest:false）
+          // 遮挡剔除：天体被更近行星挡住时亮点一并隐藏（太阳标记 depthTest:false）；
+          // 无深度测试的标记再补飞船实体遮挡（太阳在飞船正后方时不得透过船体）
           entry.miniMarker.visible = !viewOccluded(
-            entry.world[0], entry.world[1], entry.world[2], name);
+            entry.world[0], entry.world[1], entry.world[2], name) &&
+            (entry.miniMarker.material.depthTest || !craftOccluded(
+              entry.world[0], entry.world[1], entry.world[2]));
         } else {
           entry.miniMarker.visible = false;
         }
@@ -2117,14 +2550,17 @@
     body: null, tint: null, i: 0, dKm: 0, alphaDeg: 0,
     craft: _shineDbgCraft, smp: _shineDbgSmp, sunL: _shineDbgSun, lam: 0,
   };   // 调试探针（CassiniScene.shineDebug）；craft/smp/sunL 为复用缓冲，仅即时读取
-  function updatePlanetShine() {
+  /* 逐天体取贡献最大的反照光天体（对给定飞船位置解算；分离后轨道器与
+   * 探测器位置可差数万 km——Titan 进入日 ~6×10⁴ km，同一解算只对解算位置
+   * 正确——轨道器/探测器各自调用一次）。返回 null 表示无有效贡献。 */
+  function solveShine(world) {
     let best = 0, bestName = null, bestEntry = null, bk = 0, bdx = 0, bdy = 0, bdz = 0, bw = 0,
         bdKm = 0, bAlpha = 0;
     for (const [name, e] of registry) {
       if (name === '__sunLight' || name === 'sun' || !e.radius) continue;
-      const dx = e.world[0] - _cassWorld[0],
-            dy = e.world[1] - _cassWorld[1],
-            dz = e.world[2] - _cassWorld[2];
+      const dx = e.world[0] - world[0],
+            dy = e.world[1] - world[1],
+            dz = e.world[2] - world[2];
       const d = Math.hypot(dx, dy, dz);
       if (d <= e.radius) continue;            // 已撞入行星本体（掩食因子已归零）
       const ratio = e.radius / d;
@@ -2141,18 +2577,44 @@
         bdx = dx / d; bdy = dy / d; bdz = dz / d;   // 飞船→行星单位向量
       }
     }
-    if (best > 1e-4) {
-      let tint = SHINE_TINT[bestName] || [1, 1, 1];
-      if (sampleShineTint(bestEntry, bk, bdx, bdy, bdz, _shineTint)) tint = _shineTint;
-      const I = SUN_INTENSITY * best;
-      _shineDir.set(bdx, bdy, bdz).applyQuaternion(_camQInv);
-      _shineCol.set(tint[0] * I, tint[1] * I, tint[2] * I);
-      window.CassiniModel.setShine(_shineDir, _shineCol, bw);
-      shineDebug.body = bestName;
-      shineDebug.tint = [tint[0], tint[1], tint[2]];
-      shineDebug.i = best;
-      shineDebug.dKm = Math.round(bdKm);
-      shineDebug.alphaDeg = +(Math.acos(Math.max(-1, Math.min(1, bAlpha))) * 180 / Math.PI).toFixed(1);
+    if (best <= 1e-4) return null;
+    return { name: bestName, entry: bestEntry, i: best, k: bk, w: bw,
+             dKm: bdKm, cosA: bAlpha, dx: bdx, dy: bdy, dz: bdz };
+  }
+
+  /* 解算结果 → 视图空间方向/颜色；最终色调写入 outTint（调试探针读取） */
+  function applyShine(s, outDir, outCol, outTint) {
+    let tint = SHINE_TINT[s.name] || [1, 1, 1];
+    if (sampleShineTint(s.entry, s.k, s.dx, s.dy, s.dz, outTint)) tint = outTint;
+    outTint[0] = tint[0]; outTint[1] = tint[1]; outTint[2] = tint[2];
+    const I = SUN_INTENSITY * s.i;
+    outDir.set(s.dx, s.dy, s.dz).applyQuaternion(_camQInv);
+    outCol.set(tint[0] * I, tint[1] * I, tint[2] * I);
+  }
+
+  const _shineDirH = new THREE.Vector3();
+  const _shineColH = new THREE.Vector3();
+  const _shineTintH = [1, 1, 1];
+  function updatePlanetShine(hw) {
+    // 探测器（hw = 分离后惠更斯位置，未分离为 null）先解算：shineDebug 探针
+    // 缓冲（smp/sunL/lam 在 sampleShineTint 内复用）随后被 Cassini 解算覆写，
+    // 调试语义保持卡西尼视角
+    const h = hw ? solveShine(hw) : null;
+    if (h) {
+      applyShine(h, _shineDirH, _shineColH, _shineTintH);
+      window.CassiniModel.setProbeShine(_shineDirH, _shineColH, h.w);
+    } else {
+      window.CassiniModel.setProbeShine(null, null, 0);
+    }
+    const s = solveShine(_cassWorld);
+    if (s) {
+      applyShine(s, _shineDir, _shineCol, _shineTint);
+      window.CassiniModel.setShine(_shineDir, _shineCol, s.w);
+      shineDebug.body = s.name;
+      shineDebug.tint = [_shineTint[0], _shineTint[1], _shineTint[2]];
+      shineDebug.i = s.i;
+      shineDebug.dKm = Math.round(s.dKm);
+      shineDebug.alphaDeg = +(Math.acos(Math.max(-1, Math.min(1, s.cosA))) * 180 / Math.PI).toFixed(1);
       _shineDbgCraft[0] = _cassWorld[0]; _shineDbgCraft[1] = _cassWorld[1]; _shineDbgCraft[2] = _cassWorld[2];
       shineDebug.craft = _shineDbgCraft;
     } else {
@@ -2180,6 +2642,37 @@
       if (t <= 0 || t >= 1) continue;                   // 遮挡体须位于相机与目标之间
       const cx = bx - dx * t, cy = by - dy * t, cz = bz - dz * t;
       if (cx * cx + cy * cy + cz * cz < e.radius * e.radius) return true;
+    }
+    return false;
+  }
+
+  /* —— 飞船实体对无深度测试标记的遮挡 ——
+   * 太阳迷你标记 depthTest:false（须盖过日面自身深度，否则标记被日盘前半
+   * 球吞掉），代价是深度缓冲里的一切都挡不住它——Cassini 轨道器 / Huygens
+   * 探测器模型恰在相机与太阳之间时会透过船体显形（背光特写尤其刺眼）。
+   * 按「相机→天体射线穿过飞船包围球」解析补测，与 viewOccluded 同一套射
+   * 线-球体几何；仅在 3D 模型实际渲染时生效——远观只剩亮点标记时，亮点互
+   * 叠由 renderOrder 定层级（Cassini 标记更上），太阳标记不熄灭避免闪烁。 */
+  const CASSINI_OCCL_R = MODEL_SPAN / 2;   // 9 m：全尺寸跨距（磁强计双杆）之半
+  const HUYGENS_OCCL_R = 0.0016;           // 1.6 m：φ2.62 m 探测器 + 余量
+  function craftOccluded(wx, wy, wz) {
+    const dx = wx - camWorld.x, dy = wy - camWorld.y, dz = wz - camWorld.z;
+    const len2 = dx * dx + dy * dy + dz * dz;
+    if (len2 < 1e-20) return false;
+    const hw = window.HuygensVis && window.HuygensVis.getWorld();
+    for (let i = 0; i < 2; i++) {
+      const p = i === 0 ? _cassWorld : hw;
+      if (!p) continue;
+      const shown = i === 0
+        ? cassiniModel.visible
+        : !!(huygensMesh && huygensMesh.visible);
+      if (!shown) continue;
+      const r = i === 0 ? CASSINI_OCCL_R : HUYGENS_OCCL_R;
+      const bx = p[0] - camWorld.x, by = p[1] - camWorld.y, bz = p[2] - camWorld.z;
+      const t = (bx * dx + by * dy + bz * dz) / len2;   // 射线参数：0=相机 1=目标
+      if (t <= 0 || t >= 1) continue;                   // 遮挡体须位于相机与目标之间
+      const cx = bx - dx * t, cy = by - dy * t, cz = bz - dz * t;
+      if (cx * cx + cy * cy + cz * cz < r * r) return true;
     }
     return false;
   }
@@ -2436,8 +2929,7 @@
     }
     const absDim = (1 - ABS_DIM1 * bestK) * (1 - ABS_DIM2 * bestMK);
     const idxNow = trailIndexAt(t);
-    const _swb = soiWindowBound();
-    const bound2 = _swb * _swb;    for (const [name, sp] of soiPlanets) {
+    for (const [name, sp] of soiPlanets) {
       const entry = sp.entry;
       const k = kOf.get(name) || 0;
       const isMoon = !!entry.parent;
@@ -2446,24 +2938,24 @@
       const win = showRel && k > 0.001 ? soiWindowAt(sp, t) : null;
       for (const w of sp.wins) {
         if (!win || w !== win || tfade <= 0.01) { w.full.visible = false; w.flown.visible = false; continue; }
-        // —— 行星锚定的浮动原点维护：原点漂移或行星漂移超阈值才重建顶点缓冲，
-        //    逐帧仅更新对象位置（o − cam + planet_now − pRef，f64 精确补偿）——
-        const wx = entry.world[0], wy = entry.world[1], wz = entry.world[2];
-        const ddx = camWorld.x - w.o.x, ddy = camWorld.y - w.o.y, ddz = camWorld.z - w.o.z;
-        const dpx = wx - w.pRef.x, dpy = wy - w.pRef.y, dpz = wz - w.pRef.z;
-        if (!w.built ||
-            ddx * ddx + ddy * ddy + ddz * ddz + dpx * dpx + dpy * dpy + dpz * dpz > bound2) {
-          rebuildSoiWindow(w, entry);
-        }
+        // —— 缓冲一次性构建（不含相机量 → 永不重建）；每帧对象位置在 f64 中精确给出
+        //    渲染位置 ≡ 锚定体当前 + rel0 + buf − camWorld = 锚定体当前 + rel_i − cam ——
+        if (!w.built) buildSoiWindow(w);
         w.full.visible = trailOptions.future;
         w.flown.visible = true;
+        const wx = entry.world[0], wy = entry.world[1], wz = entry.world[2];
+        const rel0 = w.rel0;   // 旧数据回退路径 rel 未去锚：rel0 为 null → 用 0
+        const bx = rel0 ? rel0[0] : 0, by = rel0 ? rel0[1] : 0, bz = rel0 ? rel0[2] : 0;
         w.full.position.set(
-          w.o.x - camWorld.x + (wx - w.pRef.x),
-          w.o.y - camWorld.y + (wy - w.pRef.y),
-          w.o.z - camWorld.z + (wz - w.pRef.z));
+          wx + bx - camWorld.x,
+          wy + by - camWorld.y,
+          wz + bz - camWorld.z);
         w.flown.position.copy(w.full.position);
         w.full.material.opacity = 0.30 * k * lvlDim * tfade;
         w.flown.material.opacity = 0.9 * k * lvlDim * tfade;
+        // 动态尾迹与所属窗口线同步（该体为当前层级的最佳匹配体时）
+        if (name === bestName) tailPlanet.material.opacity = w.flown.material.opacity;
+        if (name === bestMoon) tailMoon.material.opacity = w.flown.material.opacity;
         // 当前时刻在窗口顶点区间内的相对索引
         const rel = Math.min(Math.max(idxNow - w.i0, 0), w.n - 1);
         let wStart = 0;
@@ -2475,18 +2967,24 @@
           else { while (hi - lo > 1) { const m = (lo + hi) >> 1; if (ts[m] <= t - RECENT_SPAN) lo = m; else hi = m; } }
           wStart = lo;
         }
-        w.flown.geometry.setDrawRange(wStart, Math.max(2, rel + 1 - wStart));
+        // flown 修剪到动态尾迹衔接点（idxTail 对应的窗口内索引）：其后的末端弦
+        // 由相对系尾迹按真实路径绘制，衔接点与窗口线逐位重合
+        const relTail = Math.min(Math.max(tailIdxTail - w.i0, -1), rel);
+        const flownWinCount = relTail + 1 - wStart;
+        w.flown.geometry.setDrawRange(wStart, Math.max(0, flownWinCount));
+        w.flown.visible = flownWinCount >= 2;
         if (trailOptions.future) {
-          w.full.geometry.setDrawRange(rel, Math.max(0, w.n - rel));
+          // 首弦 [rel → rel+1] 由尾迹延伸段接管，future 线从 rel+1 起画
+          w.full.geometry.setDrawRange(rel + 1, Math.max(0, w.n - (rel + 1)));
         }
         // 相对轨迹顶点少，逐帧刷新颜色（近期淡出跟随回放，无 600s 缓存迟滞）
-        applyTrailFade(w.flown, w.times, t, [1.0, 0.827, 0.498], rel + 1, wStart, true);
+        applyTrailFade(w.flown, w.times, t, [1.0, 0.827, 0.498], relTail + 1, wStart, true);
       }
     }
     // 绝对（日心）轨迹亮度：进入行星 SOI 降 45%，再进入卫星 SOI 再降 35%
     trailFullLine.material.opacity = 0.34 * absDim * tfade;
     trailFlownLine.material.opacity = 0.95 * absDim * tfade;
-    leaderLine.material.opacity = 0.9 * absDim * tfade;
+    tailAbs.material.opacity = 0.95 * absDim * tfade;
     soiState.name = bestK > 0.02 ? bestName : null;
     soiState.k = bestK;
     soiState.moon = bestMK > 0.02 ? bestMoon : null;
@@ -2663,7 +3161,26 @@
     cassiniPosAt,
     trailIndexAt,
     trailLength: trailN,
+    trailT,                       // 调试探针：轨迹时间表（f64）
+    tailIdxTail: () => tailIdxTail,
     J2000Ms,
     bodyNames: BODIES.map(b => b.name),
+    // —— 调试探针（只读，不影响渲染）——
+    get cassiniMarker() { return cassiniMarker; },
+    get cassiniModel() { return cassiniModel; },
+    get cassWorld() { return _cassWorld; },
+    get trailFullLine() { return trailFullLine; },
+    get trailFlownLine() { return trailFlownLine; },
+    get trailOrigin() { return trailOrigin; },
+    // 调试探针：轨迹顶点世界坐标（three 场景系）；已发生坍塌/平滑，与渲染一致
+    trailWorldAt(i) {
+      if (!(i >= 0 && i < trailN)) return null;
+      return [trailThree[i * 3], trailThree[i * 3 + 1], trailThree[i * 3 + 2]];
+    },
+    get tailAbs() { return tailAbs; },
+    get tailPlanet() { return tailPlanet; },
+    get tailMoon() { return tailMoon; },
+    get soiPlanets() { return soiPlanets; },
+    get registryMap() { return registry; },
   };
 })();

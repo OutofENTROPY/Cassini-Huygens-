@@ -116,7 +116,12 @@
     });
   }
 
-  function setNow(t) { state.t = t; }
+  /* 跳转一律钳制到数据域 [tStart, tEnd]：事件表 et 为 UTC 秒且发射事件早于
+   * 烘焙数据起点（~44 min），越域值会让 cassiniPosAt 沿首弦线性外推数万 km，
+   * Cassini 脱离轨迹起点（即"后方时间点点击发射事件后位置偏移"） */
+  function setNow(t) {
+    state.t = Math.min(Math.max(t, state.tStart), state.tEnd);
+  }
   function markPast(events, t) {
     events.forEach(ev => ev._mark && ev._mark.classList.toggle('past', ev.et <= t));
   }

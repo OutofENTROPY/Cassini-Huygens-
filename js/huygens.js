@@ -1,13 +1,13 @@
-/* Huygens 分离后独立飞行可视化（真实 dynamo 腿数据）
+/* Huygens 分离后独立飞行可视化（NAIF SPICE -150 CASP 真值）
  *
- * 2004-12-25 02:00 UTC 分离（相对速度 ~0.35 m/s）后，Huygens 沿 NASA Eyes
- * dynamo 的真实轨迹飞行（tools/bake_data.py 烘焙自 sc_huygens/saturn/orb
- * 土星中心巡航腿（28 个根数关键帧，转移周期 31.9 天与真实 C 轨道一致）与
- * sc_huygens/titan/orb Titan 中心进入双曲线，存于 CASSINI_DATA.spacecraft.
- * cassini.huygens），于 2005-01-14 09:06 UTC 进入 Titan 大气，经 2h27m
- * 气动减速—降落伞下降后于约 11:30 UTC 着陆（NASA science.nasa.gov：descent
- * lasted 2h27m / landed about 11:30 UTC / survived another 72 minutes on the
- * surface）——着陆 + 72 min 失联（LOS）后移除探测器模型/标记/标签，
+ * 2004-12-25 02:00 UTC 分离后，Huygens 沿 NASA/NAIF 重构星历飞行：
+ * data 由 tools/bake_spice.py --huygens 直采 COSP 卷 050214R_SCPSE 内核的
+ * -150 (CASP) 段（2004-11-23 .. 2005-01-14 09:05:52.5 进入界面）。分离前
+ * -150 与 -82 严格同点；弹射分离相对速度 ~0.39 m/s（NASA/ESA：弹簧分离 +
+ * 7 rpm 自旋稳定），sep+1h 相距 1.38 km、sep+7.1h 达 10 km、sep+20d 进入
+ * Titan 大气（1270 km / 6.03 km/s / 路径角 −65.55°，与 NASA 公布进入条件
+ * 一致），经 2h27m 气动减速—降落伞下降后于约 11:33 UTC 着陆（descent
+ * lasted 2h27m）——着陆 + 72 min 失联（LOS）后移除探测器模型/标记/标签，
  * 轨迹保留为已飞历史。
  *
  * 轨迹与显示（与 Cassini 同一套 SOI 参考系逻辑，item 2/3/4）：
@@ -16,8 +16,18 @@
  *     再进入 Titan SOI 再降（absDim 与 scene.js 逐值一致）。
  *   一级（相对土星）—— Saturn SOI 内淡入；进入 Titan SOI 时降亮度。
  *   二级（相对 Titan）—— Titan SOI 内淡入（真空双曲线进入段 + 下降段）。
- *   姿态：防热大底(+Z) 巡航段沿土星系轨迹切向、进入后沿相对 Titan 气流方向
- *   （进入界面处的快速重定向即真实气动减速行为）；分离后 7 rpm 自旋稳定。
+ *   分离近场渲染（item 8）：分离瞬间 ρ=0 与挂载态严格连续，近场位置 =
+ *     Cassini 模型锚定 + relCass 真实相对行（0.39 m/s 实时漂移可见）；
+ *     相距超过 HUY_BLEND_KM（默认 10 km，可修改）后，在 ×SPAN 带宽内
+ *     smoothstep 缓慢插值到土星锚定轨道（relSat），吸收 Cassini/Saturn
+ *     两套锚定各自的入差，全程无跳变。
+ *   姿态（NASA 真实时序）：分离前 Cassini 已把整机定向到 Huygens 进入姿态，SED
+ *   弹射并赋予 7 rpm 自旋稳定；分离后无姿态控制 → 自旋轴在惯性系中固定。实测
+ *   （真实姿态回放）分离时刻探测器自旋轴 = body +Y（防热大底法向）≈ 进入走廊
+ *   RAM（仅差 0.68°），故分离后**不重定向**——姿态冻结在分离瞬间的组合体姿态，
+ *   仅叠加绕 body +Y 的 7 rpm 自旋；大底在进入界面处即天然正对气流。
+ *   自旋轴 = 探测器回转对称轴 = wrap-local +Y（GLB 实测：φ2.615 大底在 XZ 面、
+ *   Y 为 0.806 m 轴向厚度，σ_Y 最小），由 spin 组本地 Y 旋转承担。
  * 三条轨迹线随浮动原点逐帧重定基准；一级/二级锚定在母星当前模型位置上。
  */
 window.HuygensVis = (function () {
@@ -39,10 +49,23 @@ window.HuygensVis = (function () {
   const ABS_DIM1 = 0.45, ABS_DIM2 = 0.35, REL1_DIM2 = 0.45;
   const SPIN_RPM = 7;
 
+  // 分离近场→轨道交接阈值（可修改）：相距 HUY_BLEND_KM 内保持 Cassini 锚定 +
+  // 真实 relCass 漂移（NASA 真值实时分离）；更远后在 ×SPAN 带宽内 smoothstep
+  // 缓慢插值到土星锚定轨道（relSat）——带宽取 10 倍阈值（10→100 km，约
+  // sep+7h..+2.5d），对两套锚定 ~百 km 级入差完全平滑。
+  const HUY_BLEND_KM = 10;
+  const HUY_BLEND_SPAN = 10;
+
   let ready = false;
   let probe = null, marker = null, labelEl = null;
   let lines = null;               // {abs/sat/tit: {full, flown}}
   let coast = null, desc = null;  // {t f64[n], w f64[3n]}：Three 轴本地坐标
+  let sepCass = null;             // relCass 行（Huygens 相对 Cassini 模型，分离定位）
+  let spinAxis = null;            // 进入走廊 RAM 向（自洽性诊断；自旋轴恒为 body +Y）
+  let mountLocal = null;          // 挂点（Cassini 结构系，km）——由模型实测
+  let centroidLocal = new THREE.Vector3();   // 质心相对挂点的偏置（结构系，km）
+  let modelQuat = null;           // 分离前组合体姿态（Cassini 体轴 → 惯性系）
+  let sepQuat = null;             // 分离瞬间姿态快照（自旋轴惯性系固定，之后不变）
   let absVerts = null;            // 日心系顶点（Three 轴 f64，静态）
   let absTimes = null;
   let nC = 0, nD = 0, nAbs = 0;
@@ -89,8 +112,42 @@ window.HuygensVis = (function () {
     try {
       coast = unpack(HUY.relSat);
       desc = unpack(HUY.relTit);
+      sepCass = HUY.relCass ? unpack(HUY.relCass) : null;
       nC = coast.n; nD = desc.n;
       nAbs = nC + nD;
+
+      /* —— 真实挂点（item：分离前后位置严格按模型结构）——
+       * cassini_model.js 的 wrapProbe 不做任何平移/轴向预旋转，wrap 原点即 GLB
+       * 原点 = huygens_probe 在组合体里的挂点。实测该节点局部变换为单位阵、
+       * 位于 BUS 之下，故挂点在 Cassini 结构系里严格落在组合体原点 (0,0,0)，
+       * 模型包围盒质心偏在 (0.2, −1404.7, −1114.6) mm——即探测器是「贴着母船
+       * 原点向外悬挂」的，其自身几何自带偏移，无需再加挂点位移。
+       * 因此分离前探测器模型只要按 Cassini 位置 + Cassini 姿态摆位，就与组合
+       * 体（内部自带同一节点）逐点重合；分离后叠加真实相对漂移 relCass 即可。
+       * 两个模型始终用各自的姿态渲染，跨模型边界不做世界坐标插值，故分离瞬间
+       * 无穿模/跳变。 */
+      const cen = probe.userData.centroid;
+      if (cen) {
+        // 挂点 = 组合体原点（实测）：结构系内挂点相对母船原点的位移为 0；
+        // 质心偏置仅用于「自旋绕质心」，不参与定位。
+        mountLocal = new THREE.Vector3(0, 0, 0);
+        centroidLocal.set(cen.x, cen.y, cen.z);
+      }
+      // 分离前组合体姿态受真实姿态回放逐帧更新（scene.js 的 _attQ），故 init
+      // 时不取快照，改由 update 逐帧同步。
+      modelQuat = new THREE.Quaternion();
+
+      // NASA 时序（真实姿态回放实测）：分离前 Cassini 已把整机定向到 Huygens 进入
+      // 姿态——分离时刻探测器自旋轴（body +Y）在场景系 ≈ (0.3986, 0.3198, 0.8596)，
+      // 与 Titan 进入走廊 RAM ≈ (0.3945, 0.3307, 0.8573) 仅差 0.68°。故分离后无需
+      // 重定向，姿态 = 分离瞬间的组合体姿态（惯性系固定），自旋绕 body +Y 即可。
+      // 这里仍记录 spinAxis（进入走廊 RAM），仅作姿态自洽性诊断/日志用。
+      if (nD >= 2) {
+        const at = Math.min(Math.max(ENTRY_ET, desc.t[0] + 120), desc.t[nD - 1] - 120);
+        const tv = tangentAt(desc, at, [0, 0, 0]);     // 飞行方向（Titan 相对）
+        const L = Math.hypot(tv[0], tv[1], tv[2]);
+        if (L > 1e-9) spinAxis = new THREE.Vector3(-tv[0] / L, -tv[1] / L, -tv[2] / L);
+      }
 
       // 日心系顶点：巡航 = saturn(t)+relSat；进入/下降 = saturn(t)+titan(t)+relTit
       absVerts = new Float64Array(nAbs * 3);
@@ -179,15 +236,62 @@ window.HuygensVis = (function () {
   const _rel = [0, 0, 0];
   const _rel2 = [0, 0, 0];
   const _v = new THREE.Vector3();
-  const Z_AXIS = new THREE.Vector3(0, 0, 1);
+  // 探测器自旋轴（= 防热大底法向 = 回转对称轴）在 wrap-local 系里是 **Y**，由 GLB
+  // 实测确定（tools/probe_huygens_axes.js）：wrap 系包围盒 size=(2.615, 0.806,
+  // 2.615) m，X/Z 为 φ2.615 大底直径、Y 仅 0.806 为轴向厚度；顶点协方差最小主元
+  // σ_Y=0.259（X/Z 为 0.6196/0.6159，回转对称）——故自旋绕 Y 轴。
+  // 旧代码用 spin.rotation.z / setFromUnitVectors(0,0,1 → …) 把大底当径向转，
+  // 即「绕直径翻滚」而非自旋，是本条 bug（惠更斯旋转轴错误）的根因。
+  // 姿态/挂点计算用暂存（避免逐帧分配）
+  const _mountTmp = new THREE.Vector3();
+  const _cenQ = new THREE.Quaternion();
+  const _cenOff = new THREE.Vector3();
+  const _spinAxisTmp = new THREE.Vector3();
 
-  /* 任意时刻位置（日心系 Three 轴）：巡航 = saturn.world + relSat；
-     进入/下降 = titan.world + relTit（entry.world 已是组合后日心坐标）；
-     着陆后固定于表面。供 update() 与主循环（视角跟随）共用。 */
+  /* 任意时刻位置（日心系 Three 轴）：
+     分离前 = Cassini 位置 + R_cass·挂点（真实结构挂载位置，与组合体 stack 内
+     同一节点逐点重合；模型仍隐藏，仅为相机/标记/标签就位）；
+     巡航优先 = 锚定级 cassini 模型位置 + relCass（分离瞬间 ρ=0 与母船模型
+     严格连续，模型可见的分离漂移为真实 ρ，0.39 m/s NASA 真值）；相距超过
+     HUY_BLEND_KM 后在 ×SPAN 带宽内 smoothstep 缓慢插值到土星锚定轨道
+     （saturn.world + relSat）。旧数据无 relCass 时退回 saturn.world + relSat。
+     进入/下降 = titan.world + relTit；着陆后固定于表面。 */
   function worldAt(t) {
-    const satW = ctx.registry.get('saturn').world;
+    // 分离前 Huygens 挂载于 Cassini 组合体：位置即 Cassini 本体位置 + 结构挂点
+    // （若沿用巡航腿首点，relAt 会前向外推出去，形成脱离母船的「幻影」位置）
+    if (t < SEP_ET && ctx.cassiniPosAt) {
+      const cw0 = ctx.cassiniPosAt(t, [0, 0, 0]);
+      if (cw0) {
+        if (mountLocal && modelQuat) {
+          const pm = _mountTmp.copy(mountLocal).applyQuaternion(modelQuat);
+          return [cw0[0] + pm.x, cw0[1] + pm.y, cw0[2] + pm.z];
+        }
+        return [cw0[0], cw0[1], cw0[2]];
+      }
+    }
     const titW = ctx.registry.get('titan').world;
     if (t <= ENTRY_ET) {
+      const satW = ctx.registry.get('saturn').world;
+      const cw = (sepCass && ctx.cassiniPosAt) ? ctx.cassiniPosAt(t, [0, 0, 0]) : null;
+      if (cw) {
+        relAt(sepCass, t, _rel);
+        // 近场：纯真实相对漂移；HUY_BLEND_KM 外：缓慢插值到轨道（交接吸收
+        // Cassini/Saturn 两套锚定的入差，smoothstep 两端导数为零，无跳变）
+        let s = 0;
+        if (coast && HUY_BLEND_KM > 0 && t > SEP_ET) {
+          const rho = Math.hypot(_rel[0], _rel[1], _rel[2]);
+          s = (rho - HUY_BLEND_KM) / (HUY_BLEND_KM * (HUY_BLEND_SPAN - 1));
+          s = s < 0 ? 0 : s > 1 ? 1 : s;
+          s = s * s * (3 - 2 * s);
+        }
+        if (s > 0) {
+          relAt(coast, t, _rel2);
+          return [cw[0] + _rel[0] + (satW[0] + _rel2[0] - cw[0] - _rel[0]) * s,
+                  cw[1] + _rel[1] + (satW[1] + _rel2[1] - cw[1] - _rel[1]) * s,
+                  cw[2] + _rel[2] + (satW[2] + _rel2[2] - cw[2] - _rel[2]) * s];
+        }
+        return [cw[0] + _rel[0], cw[1] + _rel[1], cw[2] + _rel[2]];
+      }
       relAt(coast, t, _rel);
       return [satW[0] + _rel[0], satW[1] + _rel[1], satW[2] + _rel[2]];
     }
@@ -204,8 +308,13 @@ window.HuygensVis = (function () {
     return out;
   }
 
-  function update(t, camWorld, projScale, hPx, sharedFade) {
+  function update(t, camWorld, projScale, hPx, sharedFade, trailOrigin) {
     if (!ready || !probe || !lines) return;
+    // 组合体姿态逐帧同步（分离前探测器按结构挂点贴在母船上，须与母船同姿态）
+    if (modelQuat && ctx.cassiniQuatAt) {
+      const q = ctx.cassiniQuatAt();
+      if (q) modelQuat.copy(q);
+    }
     const opt = ctx.trailOpts();
     const showH = opt.cassini && opt.huygens !== false;
 
@@ -247,14 +356,20 @@ window.HuygensVis = (function () {
     const satDim = kSat * (1 - REL1_DIM2 * kTit);
 
     // ---- 绝对轨迹：逐帧重定基准 + 已飞/未来 + 亮度 ----
+    // 浮动原点与 scene.js 主轨迹共用（顶点缓冲 = [世界 − trailOrigin]，线对象
+    // position = trailOrigin − cam）。直接写 [世界 − cam] 在远视角下 f32 量化
+    // 步长达数十 km，相机绕转时顶点逐帧跳桶 → 轨迹抖动。
+    const o = trailOrigin || camWorld;
+    const lox = o.x - camWorld.x, loy = o.y - camWorld.y, loz = o.z - camWorld.z;
     const rebaseAbs = (line, from, count) => {
       const arr = line.geometry.attributes.position.array;
       for (let i = from; i < from + count; i++) {
-        arr[i * 3] = absVerts[i * 3] - camWorld.x;
-        arr[i * 3 + 1] = absVerts[i * 3 + 1] - camWorld.y;
-        arr[i * 3 + 2] = absVerts[i * 3 + 2] - camWorld.z;
+        arr[i * 3] = absVerts[i * 3] - o.x;
+        arr[i * 3 + 1] = absVerts[i * 3 + 1] - o.y;
+        arr[i * 3 + 2] = absVerts[i * 3 + 2] - o.z;
       }
       line.geometry.attributes.position.needsUpdate = true;
+      line.position.set(lox, loy, loz);
     };
     const idxAbs = idxAt(absTimes, nAbs, t);
     if (showH && tfade > 0.01) {
@@ -274,14 +389,16 @@ window.HuygensVis = (function () {
     }
 
     // ---- 一级（土星）二级（Titan）相对轨迹：锚定母星当前模型位置 ----
+    // 同样使用共享浮动原点（顶点缓冲相对 o，位置补偿 o − cam）。
     const anchor = (line, trk, world, from, count) => {
       const arr = line.geometry.attributes.position.array;
       for (let i = from; i < from + count; i++) {
-        arr[i * 3] = world[0] + trk.w[i * 3] - camWorld.x;
-        arr[i * 3 + 1] = world[1] + trk.w[i * 3 + 1] - camWorld.y;
-        arr[i * 3 + 2] = world[2] + trk.w[i * 3 + 2] - camWorld.z;
+        arr[i * 3] = world[0] + trk.w[i * 3] - o.x;
+        arr[i * 3 + 1] = world[1] + trk.w[i * 3 + 1] - o.y;
+        arr[i * 3 + 2] = world[2] + trk.w[i * 3 + 2] - o.z;
       }
       line.geometry.attributes.position.needsUpdate = true;
+      line.position.set(lox, loy, loz);
     };
     const idxCoast = idxAt(coast.t, nC, t);
     const idxDesc = idxAt(desc.t, nD, t);
@@ -316,17 +433,65 @@ window.HuygensVis = (function () {
       lines.tit.full.visible = false;
     }
 
-    // ---- 模型/姿态 ----
+    /* ---- 模型/姿态 ----
+     * 位置：分离前 = Cassini 位置 + R_cass·挂点（挂点实测在组合体原点，故即
+     *   Cassini 位置，与组合体逐点重合；模型仍隐藏，但相机/标记/标签已就位）；
+     *   分离后 = worldAt(t)（Cassini 模型锚定 + 真实 relCass 漂移，见 worldAt）。
+     * 姿态（NASA 真实过程）：
+     *   分离前组合体被 Cassini 定向到 Huygens 进入姿态——实测（真实姿态回放）
+     *   分离时刻探测器自旋轴（body +Y = 防热大底法向）在场景系中为
+     *   (0.3986, 0.3198, 0.8596)，与 Titan 进入走廊 RAM (0.3945, 0.3307, 0.8573)
+     *   仅差 0.68°；即**分离时自旋轴已对准进入走廊**，正是「Cassini 先转好整机、
+     *   SED 再弹射并赋予 7 rpm」的真实时序。
+     *   因此分离后**不做任何重定向**：探测器保持分离瞬间的组合体姿态（自旋轴
+     *   惯性系固定），只叠加绕 body +Y 的 7 rpm 自旋。若强行用「进入走廊」重算
+     *   姿态，反会引入与挂载态的姿态跳变/穿模——保持挂载姿态既最真实又无穿模。
+     * 自旋绕质心而非挂点：探针模型原点即挂点，质心偏在 centroidLocal，故自旋
+     *   前把模型平移到质心、自旋后再按旋转量移回，使质心成为不动点。 */
+    const preSep = t < SEP_ET;
     _v.set(pos[0] - camWorld.x, pos[1] - camWorld.y, pos[2] - camWorld.z);
+    if (preSep && modelQuat && mountLocal) {
+      const pm = _mountTmp.copy(mountLocal).applyQuaternion(modelQuat);
+      _v.x += pm.x; _v.y += pm.y; _v.z += pm.z;
+    }
     probe.position.copy(_v);
     const d = dProbe;   // modelPx 已在轨迹段前计算（与淡出共用）
     probe.visible = !gone && modelPx > 1.1;
-    if (!gone && !after) {
-      const tan = (t <= ENTRY_ET) ? tangentAt(coast, t, [0, 0, 0])
-                                  : tangentAt(desc, t, [0, 0, 0]);
-      _v.set(tan[0], tan[1], tan[2]);
-      if (_v.lengthSq() > 1e-12) probe.quaternion.setFromUnitVectors(Z_AXIS, _v.normalize());
-      probe.userData.spin.rotation.z = ((t - SEP_ET) * SPIN_RPM * 2 * Math.PI / 60) % (2 * Math.PI);
+    const spin = probe.userData.spin;
+    if (spin) {
+      if (!gone) {
+        // 分离前与分离后都用同一姿态源：组合体姿态 modelQuat（分离后取分离瞬间的
+        // 冻结值——自旋轴惯性系固定，见上）。分离瞬间因此无姿态跳变、无穿模。
+        // sepQuat：分离瞬间姿态快照，在首个 t ≥ SEP_ET 的帧锁定，之后不再更新。
+        if (!preSep && !sepQuat && modelQuat) sepQuat = modelQuat.clone();
+        const baseQ = preSep ? modelQuat : (sepQuat || modelQuat);
+        if (baseQ) probe.quaternion.copy(baseQ);
+        // —— 自旋：绕 body +Y（回转对称轴），分离前为 0、分离后 7 rpm ——
+        const ang = preSep
+          ? 0
+          : ((t - SEP_ET) * SPIN_RPM * 2 * Math.PI / 60) % (2 * Math.PI);
+        if (!preSep && centroidLocal) {
+          // 质心为不动点：模型原点（挂点）绕质心转，故把质心平移量按自旋角绕
+          // —— 绕「真实回转轴」自旋，且以质心为不动点 ——
+          // spin 是 wrap 的直接子级：p_wrap = spin.position + R_y(·)·p_child。
+          // wrap 系内质心静止位置 C0 = centroidLocal（模型质心，实测与回转轴心
+          // XZ 重合——φ2.615 大底圆心，见 cassini_model.js 的 probeRevolutionAxis）。
+          // 要求质心在 wrap 系不动：C0 = spin.position + R_y(ang)·C0，故
+          //   spin.position = C0 − R_y(ang)·C0。
+          // 旧代码错误地用世界姿态 baseQ 把 C0 换到世界系再相减，得到的是世界系
+          // 补偿向量却塞进 wrap 系 spin.position（坐标系不匹配），使实际旋转中心
+          // 偏离大底圆心 ~0.84 mm、质心在自旋中漂移 ~1.7 mm——即「分离时旋转轴
+          // 错误」。改为纯 wrap 系运算后，旋转中心严格 = 质心 = 回转轴心。
+          _cenQ.setFromAxisAngle(_spinAxisTmp.set(0, 1, 0), ang);
+          _cenOff.copy(centroidLocal).applyQuaternion(_cenQ);   // R_y(ang)·C0（wrap 系）
+          spin.position.set(centroidLocal.x - _cenOff.x,
+                            centroidLocal.y - _cenOff.y,
+                            centroidLocal.z - _cenOff.z);
+        } else {
+          spin.position.set(0, 0, 0);
+        }
+        spin.rotation.set(0, ang, 0);                  // 绕本地 +Y（= 回转轴）自旋
+      }
     }
 
     // ---- 标记点（模型不可读时接管）：屏占驱动收敛，仅模型过渡期用大标记，

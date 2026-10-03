@@ -304,8 +304,14 @@
     return label;
   }
 
+  /* 时间轴 t 域为 ET（TDB）秒；事件表 et / URL 深链为 UTC 秒。TDB−UTC ≈
+   * 64.2~69.2 s（1997→2017），全站以 65 s 常数近似：显示（fmtDate/timeline
+   * updateDate）做 t−65，UTC → t 跳转做 +65。事件跳转若不加此项会早落
+   * ~1 min，且与深链路径（本就 +65）不一致 */
+  const ET_UTC_OFF = 65;
+
   function fmtDate(t) {
-    const d = new Date(J2000Ms + (t - 65) * 1000);
+    const d = new Date(J2000Ms + (t - ET_UTC_OFF) * 1000);
     const p = (n, w = 2) => String(n).padStart(w, '0');
     return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} UTC`;
   }
@@ -337,7 +343,7 @@
   /* 点击事件卡 / 时间轴节点：跳转时刻并聚焦 Cassini 本体（不聚焦行星，
      事件天体仅作为镜头距离 zoom 的参考），同时收起星体状态卡 */
   function pickEvent(ev) {
-    tl.setNow(ev.et);
+    tl.setNow(ev.et + ET_UTC_OFF);
     tl.setPlaying(false);
     tl.refresh();
     showEventCard(ev);
@@ -400,6 +406,13 @@
     lastT = now;
     tl.tick(dt);
     const t = tl.state.t;
+
+    // 聚焦 Huygens 时倒退时间至分离前（Huygens 尚未独立飞行）→ 自动切回聚焦 Cassini。
+    // flyTo 将 focusName 立即改为 'cassini'，下一帧条件不再成立，只触发一次平滑过渡
+    if (window.HuygensVis && cam.currentFocus() === 'huygens' && t < window.HuygensVis.SEP_ET) {
+      setInfoBody(null);
+      cam.flyTo('cassini', { dist: Math.max(cam.currentDist(), 3e5) });
+    }
 
     // 1) 绝对位置 → 2) 相机 → 3) 相对渲染
     const reg2 = scene.registry;
@@ -494,7 +507,7 @@
   const dateM = hash.match(/^date=(\d{4}-\d{2}-\d{2})(?:T(\d{2}):(\d{2}))?$/);
 
   if (evHash) {
-    tl.setNow(evHash.et);
+    tl.setNow(evHash.et + ET_UTC_OFF);
     tl.refresh();
     const dist0 = evHash.zoom || (scene.registry.get(evHash.body) ? scene.registry.get(evHash.body).radius * 8 : 1e6);
     cam.focus('cassini', { dist: dist0, theta: 0.9, phi: 1.05, animate: false });
@@ -502,7 +515,7 @@
     setTimeout(() => pickEvent(evHash), 400);
   } else if (dateM) {
     const tt = Date.parse(dateM[1] + 'T' + (dateM[2] || '00') + ':' + (dateM[3] || '00') + ':00Z');
-    tl.setNow((tt - J2000Ms) / 1000 + 65);
+    tl.setNow((tt - J2000Ms) / 1000 + ET_UTC_OFF);
     tl.refresh();
     cam.focus('cassini', { dist: 0.04, theta: 0.9, phi: 1.05, animate: false });
   } else {
