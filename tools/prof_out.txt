@@ -1,0 +1,131 @@
+  Saturn GM=37,931,206.9  moons GM=9,376.6 (7 颗，环质量忽略 ~2.6e-8 M)
+=== 载入内核 ===
+  furnsh naif0012.tls
+  furnsh pck00010.tpc
+  furnsh cpck31Oct2017.tpc
+  SPK: co=0 sat=0 scpse=116 ops=3 loaded=119
+  [    0.28s] load_kernels
+=== 数据域 ===
+  [    0.04s] first_spk_time (40 次二分)
+  [    0.00s] last_spk_time (40 次二分)
+  ts0=-69820431.6 te0=558743570.8
+=== SB 偏移网格 ===
+  Saturn body-offset grid: 349204 pts @ 1800s
+  [   22.64s] build_grid
+=== 卫星网格 ===
+moon titan: 58201 pts @ 10800s
+moon enceladus: 261903 pts @ 2400s
+moon iapetus: 14551 pts @ 43200s
+moon rhea: 87302 pts @ 7200s
+moon dione: 174602 pts @ 3600s
+moon tethys: 174602 pts @ 3600s
+moon mimas: 349204 pts @ 1800s
+moon moon: 29101 pts @ 21600s
+  [   13.85s] bake_moons
+=== 行星网格 ===
+planet mercury: 29101 pts (spice)
+planet venus: 29101 pts (spice)
+planet earth: 29101 pts (spice)
+planet mars: 29101 pts (spice)
+planet jupiter: 7276 pts (spice)
+planet saturn: 7276 pts (spice)
+planet uranus: 7276 pts (spice)
+planet neptune: 7276 pts (spice)
+  [    1.62s] bake_planets2
+=== SOI 粗扫 + 细化 ===
+  [    1.07s] SOI venus: 2 wins
+  [    0.21s] SOI earth: 2 wins
+  [    0.27s] SOI jupiter: 1 wins
+  moon SOI titan: 12 windows
+  moon SOI enceladus: 0 windows
+  moon SOI iapetus: 0 windows
+  moon SOI rhea: 0 windows
+  moon SOI dione: 0 windows
+  moon SOI tethys: 0 windows
+  moon SOI mimas: 0 windows
+  [   54.37s] scan_moon_soi_windows
+=== 主轨迹 ===
+  base profile 174602 pts
+  fine vertices 213854
+  refine pass 0: split 87753, total 430764
+  refine pass 1: split 1766, total 432530
+  refine pass 2: split 55, total 432585
+  refine pass 3: split 3, total 432588
+  refine pass 4: split 2, total 432590
+  refine pass 5: split 1, total 432591
+  refine pass 6: split 1, total 432592
+  refine pass 7: split 1, total 432593
+  refine pass 8: split 1, total 432594
+  refine pass 9: split 0, total 432594
+  trail total 432594 vertices
+  [   51.46s] bake_cassini_trail
+=== 锚定轨道 ===
+  anchor launch (earth): 10 recs, span 10.6d, max_err=0.4816 km
+  anchor venus1 (venus): 20 recs, span 12.0d, max_err=0.0532 km
+  anchor venus2 (venus): 18 recs, span 12.0d, max_err=0.2564 km
+  anchor earthflyby (earth): 21 recs, span 11.0d, max_err=0.1000 km
+  anchor jupiterflyby (jupiter): 18 recs, span 61.0d, max_err=0.0148 km
+  anchor saturn (saturn): 4303 recs, span 4876.4d, max_err=0.0899 km
+  [    9.96s] bake_anchors
+=== Huygens ===
+  -150 entry state: alt=1,270.1 km  speed=6.031 km/s  fpa=-65.54 deg
+  ballistic entry→aero 209 s (alt 156 km), drop 532 km
+  huygens sep+1min: |ρ| = 0.02 km
+  huygens sep+1h: |ρ| = 1.38 km
+  huygens sep+24h: |ρ| = 33.92 km
+  10 km @ sep+7.12 h | rows: relCass 4540, relSat 4540, relTit 214
+  [    0.31s] bake_huygens
+=== cProfile（仅主轨迹+锚定）===
+  base profile 174602 pts
+  fine vertices 213854
+  refine pass 0: split 87753, total 430764
+  refine pass 1: split 1766, total 432530
+  refine pass 2: split 55, total 432585
+  refine pass 3: split 3, total 432588
+  refine pass 4: split 2, total 432590
+  refine pass 5: split 1, total 432591
+  refine pass 6: split 1, total 432592
+  refine pass 7: split 1, total 432593
+  refine pass 8: split 1, total 432594
+  refine pass 9: split 0, total 432594
+  trail total 432594 vertices
+  anchor launch (earth): 10 recs, span 10.6d, max_err=0.4816 km
+  anchor venus1 (venus): 20 recs, span 12.0d, max_err=0.0532 km
+  anchor venus2 (venus): 18 recs, span 12.0d, max_err=0.2564 km
+  anchor earthflyby (earth): 21 recs, span 11.0d, max_err=0.1000 km
+  anchor jupiterflyby (jupiter): 18 recs, span 61.0d, max_err=0.0148 km
+  anchor saturn (saturn): 4303 recs, span 4876.4d, max_err=0.0899 km
+         208216166 function calls in 114.476 seconds
+
+   Ordered by: cumulative time
+   List reduced from 158 to 25 due to restriction <25>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1   15.721   15.721   98.139   98.139 D:\Programming\HTML\Cassini\tools\bake_spice.py:711(bake_cassini_trail)
+  2496125    1.487    0.000   59.214    0.000 D:\Programming\HTML\Cassini\tools\bake_spice.py:279(state)
+  2496125    1.878    0.000   49.463    0.000 C:\Users\entropy\.workbuddy\binaries\python\envs\default\Lib\site-packages\spiceypy\spiceypy.py:154(with_errcheck)
+  2496125   22.921    0.000   45.775    0.000 C:\Users\entropy\.workbuddy\binaries\python\envs\default\Lib\site-packages\spiceypy\spiceypy.py:12889(spkezr)
+ 11063898    4.566    0.000   35.203    0.000 D:\Programming\HTML\Cassini\tools\bake_spice.py:821(_p)
+   767261    0.782    0.000   21.130    0.000 D:\Programming\HTML\Cassini\tools\bake_spice.py:814(_ecl)
+        1    0.002    0.002   16.338   16.338 D:\Programming\HTML\Cassini\tools\bake_spice.py:1358(bake_anchors)
+        6    0.627    0.104   16.305    2.717 D:\Programming\HTML\Cassini\tools\bake_spice.py:349(cheb_fit_track)
+  9984500    8.649    0.000   14.441    0.000 C:\Users\entropy\.workbuddy\binaries\python\envs\default\Lib\site-packages\spiceypy\utils\support_types.py:177(string_to_char_p)
+   523806    0.369    0.000   12.050    0.000 D:\Programming\HTML\Cassini\tools\bake_spice.py:285(pos_ecl)
+   339870    0.751    0.000   11.215    0.000 D:\Programming\HTML\Cassini\tools\bake_spice.py:948(sampler)
+  4168704    5.088    0.000   10.803    0.000 C:\Users\entropy\.workbuddy\binaries\python\envs\default\Lib\site-packages\numpy\linalg\_linalg.py:2598(norm)
+  2496127    2.114    0.000    8.264    0.000 D:\Programming\HTML\Cassini\tools\bake_spice.py:267(et)
+ 11063898    6.257    0.000    6.257    0.000 {built-in method builtins.round}
+  2496127    2.353    0.000    5.895    0.000 C:\Users\entropy\.workbuddy\binaries\python\envs\default\Lib\site-packages\numpy\lib\_function_base_impl.py:1549(interp)
+  2496125    2.728    0.000    5.783    0.000 C:\Users\entropy\.workbuddy\binaries\python\envs\default\Lib\site-packages\spiceypy\utils\support_types.py:145(c_vector_to_python)
+ 52536562    5.332    0.000    5.332    0.000 {built-in method builtins.isinstance}
+ 11156496    3.269    0.000    3.269    0.000 {method 'get' of 'dict' objects}
+    23148    0.027    0.000    2.938    0.000 C:\Users\entropy\.workbuddy\binaries\python\envs\default\Lib\site-packages\numpy\polynomial\chebyshev.py:1554(chebfit)
+    23148    0.478    0.000    2.910    0.000 C:\Users\entropy\.workbuddy\binaries\python\envs\default\Lib\site-packages\numpy\polynomial\polyutils.py:582(_fit)
+  4168702    2.716    0.000    2.716    0.000 {method 'dot' of 'numpy.ndarray' objects}
+   683269    2.062    0.000    2.384    0.000 D:\Programming\HTML\Cassini\tools\bake_spice.py:331(offset)
+  2496127    2.051    0.000    2.051    0.000 {built-in method numpy._core._multiarray_umath.interp}
+  2496125    1.346    0.000    1.853    0.000 C:\Users\entropy\.workbuddy\binaries\python\envs\default\Lib\site-packages\spiceypy\utils\support_types.py:123(empty_double_vector)
+  2496125    0.693    0.000    1.809    0.000 C:\Users\entropy\.workbuddy\binaries\python\envs\default\Lib\site-packages\spiceypy\spiceypy.py:128(check_for_spice_error)
+
+
+
