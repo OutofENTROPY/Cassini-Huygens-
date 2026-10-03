@@ -8,8 +8,9 @@ __pycache__/
 tmp_*.txt
 out_test.txt
 
-# 根目录调试截图
+# 调试截图（根目录 + tools/shot_*.js 输出）
 /*.png
+tools/shots/
 
 # build_textures.py 中间产物
 textures/pack_*
