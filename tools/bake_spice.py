@@ -2006,9 +2006,11 @@ def main():
             ap = _anchor_pos_ecl(name, u)
             if ap is None:
                 return
-            # pts / ap 均为黄道 km f64；先各自转 three 系再相减（小量）
-            px, py, pz = eq_to_ecl((float(pts[i0 + k, 0]), float(pts[i0 + k, 1]), float(pts[i0 + k, 2])))
-            ax, ay, az = eq_to_ecl((float(ap[0]), float(ap[1]), float(ap[2])))
+            # pts（bake_cassini_trail 已内联赤道→黄道）与 ap（_anchor_pos_ecl 已
+            # eq_to_ecl）均为黄道 km f64 —— 此处不可再 eq_to_ecl（曾双重旋转
+            # 2ε≈46.9°：|rel| 模长不变但方向整体转错，相对轨迹几何错误）。
+            px, py, pz = (float(pts[i0 + k, 0]), float(pts[i0 + k, 1]), float(pts[i0 + k, 2]))
+            ax, ay, az = (float(ap[0]), float(ap[1]), float(ap[2]))
             rel[k, 0] = px - ax
             rel[k, 1] = pz - az               # three: y = ecl_z
             rel[k, 2] = -(py - ay)            # three: z = -ecl_y
