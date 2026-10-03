@@ -55,8 +55,8 @@ body {
 button { font-family: inherit; }
 button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: var(--r-full); }
 #app { position: relative; width: 100%; height: 100%; }
-#scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
-#scene:active { cursor: grabbing; }
+#scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: default; touch-action: none; }
+#scene:active { cursor: default; }
 /* 触屏：手势在画布与时间条上就地消化，禁止浏览器接管（双击缩放 / 捏合缩放整页） */
 body { touch-action: manipulation; }
 
@@ -669,23 +669,39 @@ body.event-open:not(.event-folded) #event-fab {
   padding: 2px 5px;
   white-space: nowrap;
   visibility: visible;
+  /* 默认半透明：弱化标签存在感，不遮挡星野与轨迹；悬停 / 聚焦时提亮（opacity 1 + 文字发光） */
+  opacity: .55;
   /* 淡入淡出：visibility 零时长翻转，显示时立即生效、隐藏时延迟到淡出结束 */
-  transition: color .4s var(--ease), opacity .35s var(--ease), visibility 0s;
+  transition: color .4s var(--ease), opacity .25s var(--ease), text-shadow .25s var(--ease), visibility 0s;
 }
-.label:hover { color: #ffffff; }
+.label:hover,
+.label:focus-visible {
+  opacity: 1; color: #ffffff;
+  text-shadow: 0 0 7px rgba(0,0,0,.95), 0 0 12px rgba(200,222,255,.45);
+}
+/* 刻度线随标签一起半透明，悬停时同步提亮 */
+.label::after { opacity: .55; transition: opacity .25s var(--ease); }
+.label:hover::after, .label:focus-visible::after { opacity: 1; }
 .label.sc { color: var(--accent2); font-weight: 600; }
-.label.sc:hover { color: #ffc896; }
+.label.sc:hover, .label.sc:focus-visible {
+  color: #ffc896;
+  text-shadow: 0 0 7px rgba(0,0,0,.95), 0 0 12px rgba(255,178,110,.5);
+}
 /* Cassini 标签置于标记点下侧：刻度线朝上指向标记，与上侧的天体标签分离 */
 .label.sc::after { display: none; }
 .label.sc::before {
   content: ""; display: block; width: 1px; height: 10px;
   background: rgba(255,162,89,.50); margin: 0 auto 2px;
+  opacity: .55; transition: opacity .25s var(--ease);
 }
+.label.sc:hover::before, .label.sc:focus-visible::before { opacity: 1; }
 .label::after {
   content: ""; display: block; width: 1px; height: 10px;
   background: rgba(242,244,248,.4); margin: 2px auto 0;
 }
-.label.dim { opacity: .45; }
+/* 远距微缩标签：在半透明基础上再压暗，悬停一律恢复为完全提亮 */
+.label.dim { opacity: .3; }
+.label.dim:hover, .label.dim:focus-visible { opacity: 1; }
 .label.hide {
   opacity: 0; visibility: hidden; pointer-events: none;
   transition: color .4s var(--ease), opacity .35s var(--ease), visibility 0s .35s;

@@ -19,6 +19,7 @@
   };
 
   let canvas;
+  let sceneRef = null;         // update() 每帧注入，供滚轮/双指查询聚焦天体的视距下限
   let dragging = 0;
   let lastX = 0, lastY = 0;
   let lastUpdate = 0;
@@ -28,6 +29,15 @@
   const MAX_DIST = 2.6e10;     // 足以纳入海王星轨道（45 亿 km）的全景
 
   const _look = new THREE.Vector3();
+
+  /* 聚焦天体的视距下限，与 update() 中 dEff 的显示下限保持一致：
+     1.05R = 地表上空 5% 半径（地球 ~320 km、土星云顶上 ~2900 km），
+     仍高于地球云顶层（+10 km）；大气为表面边缘光、无独立壳层，不穿帮 */
+  function minDistForFocus() {
+    if (state.focusName === 'cassini' || !sceneRef || !sceneRef.registry) return MIN_DIST;
+    const e = sceneRef.registry.get(state.focusName);
+    return (e && e.radius) ? e.radius * 1.05 : MIN_DIST;
+  }
 
   function init(canvasEl) {
     canvas = canvasEl;
@@ -53,13 +63,29 @@
       }
     });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-    canvas.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      // 灵敏度 0.002/δ：一格滚轮约 22% 变距（原 0.0012 ≈ 13%），手感更跟手
+
+    // 滚轮缩放：绑在 window 捕获阶段而非 canvas 上。
+    // 标签（.label，pointer-events:auto）覆盖在 canvas 之上，事件目标是标签时
+    // 不会冒泡到 canvas；捕获阶段在 window 上先一步拦截，使鼠标位于任意标签上方时
+    // 滚轮依然缩放。UI 面板（控件、时间轴、列表等）内的滚动保持原生行为。
+    window.addEventListener('wheel', (e) => {
+      // 面板内滚动不劫持：命中带滚动/交互语义的祖先容器时放行（deltaMode!==0 视为非离散滚轮，一律放行）
+      if (e.deltaMode !== 0 || e.ctrlKey) return;
+      for (let n = e.target; n && n !== document && n.nodeType === 1; n = n.parentNode) {
+        if (n === canvas) break;   // 3D 视口内的元素（canvas / #labels / .label / 标记）一律缩放
+        if (n.id === 'labels') break;
+        const t = n.tagName;
+        if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA' || t === 'BUTTON') return;
+        if (n.scrollHeight > n.clientHeight + 1 && n.clientHeight > 0) return;   // 可纵向滚动容器
+      }
+      // 灵敏度 0.002/δ：一格滚轮约 22% 变距（原 0.0012 ≈ 13%），手感更跟手。
+      // 下限用聚焦天体的显示下限（非 MIN_DIST）：贴地后目标距离若仍在画面之外
+      // 继续变小，积累的超额滚动须先滚回才能缩小——在输入端直接截断，反向即响应
       const k = Math.exp(e.deltaY * 0.002);
-      state.dist = Math.max(MIN_DIST, Math.min(MAX_DIST, state.dist * k));
+      state.dist = Math.max(minDistForFocus(), Math.min(MAX_DIST, state.dist * k));
       state.anim = null;
       // 不直接同步 sDist：update() 中按帧率无关的指数缓动追踪目标距离，实现平滑缩放
+      e.preventDefault();
     }, { passive: false });
 
     let touchDist = 0;
@@ -86,7 +112,7 @@
           e.touches[0].clientY - e.touches[1].clientY);
         if (touchDist > 0) {
           const k = touchDist / d;
-          state.dist = Math.max(MIN_DIST, Math.min(MAX_DIST, state.dist * k));
+          state.dist = Math.max(minDistForFocus(), Math.min(MAX_DIST, state.dist * k));
         }
         touchDist = d;
       }
@@ -170,6 +196,7 @@
 
   /* 每帧更新。bodyWorld: name -> [x,y,z]（three 系世界坐标），cassWorld: Cassini 世界坐标 */
   function update(now, bodyWorld, cassWorld, scene) {
+    sceneRef = scene;
     if (state.anim) state.anim(now);
 
     let tgt;
@@ -194,13 +221,10 @@
     }
     state.target = tgt;
 
-    let minD = MIN_DIST;
-    const reg = scene.registry;
-    if (state.focusName !== 'cassini' && reg.get(state.focusName)) {
-      // 1.05R：地表上空 5% 半径（地球 ~320 km、土星云顶上 ~2900 km），
-      // 仍高于地球云顶层（+10 km）；大气为表面边缘光、无独立壳层，不穿帮
-      minD = reg.get(state.focusName).radius * 1.05;
-    }
+    const minD = minDistForFocus();
+    // 目标距离一并钳到显示下限：即使某条写入路径（flyTo 终点等）落到下限之下，
+    // 也不积累画面之外的超额缩小量，反向滚动立即生效
+    if (state.dist < minD) state.dist = minD;
     const dEff = Math.max(state.sDist, minD);
 
     // 帧率无关的指数缓动：拖拽旋转低阻尼紧贴手势（9→16），缩放/平移同步收紧。
@@ -238,6 +262,25 @@
       cam[0] += r[0] * state.panSX; cam[2] += r[2] * state.panSX;
       cam[1] += state.panSY;
       tgt[0] += r[0] * state.panSX; tgt[2] += r[2] * state.panSX; tgt[1] += state.panSY;
+    }
+
+    // 防穿体：镜头不得进入行星/卫星内部。聚焦天体已有 1.05R 距离下限，但
+    // 跟随飞船、平移或大视距时镜头偏移仍可能落进邻近天体——进入星体内部后
+    // 星体正面被剔除（星空透盘可见），大气加色壳失去盘面深度遮挡。沿径向
+    // 推到星表外 2% 余量处（大气壳 1.045R 之内，不干扰坠入段的内视大气观感）
+    if (scene.registry && bodyWorld) {
+      for (const name in bodyWorld) {
+        const e = scene.registry.get(name);
+        if (!e || !e.radius || e.radius < 50) continue;   // 仅行星/卫星级天体
+        const w = bodyWorld[name];
+        const dx = cam[0] - w[0], dy = cam[1] - w[1], dz = cam[2] - w[2];
+        const rr = e.radius * 1.02;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < rr * rr) {
+          const k = rr / (Math.sqrt(d2) || 1e-9);
+          cam[0] = w[0] + dx * k; cam[1] = w[1] + dy * k; cam[2] = w[2] + dz * k;
+        }
+      }
     }
 
     scene.setCameraWorld(cam);
