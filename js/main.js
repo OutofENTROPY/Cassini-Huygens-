@@ -45,7 +45,7 @@
   // 默认轨迹显示：未来轨迹关闭，历史轨迹仅近期
   scene.setTrailOptions({ future: false, mode: 'recent' });
 
-  // Cassini 标签（置于标记点下侧，.sc 样式刻度线朝上）
+  // Cassini 标签（置于标记点下侧，与上侧的天体标签分离）
   const scLabel = document.createElement('div');
   scLabel.className = 'label sc below';
   scLabel.textContent = 'Cassini';

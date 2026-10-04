@@ -523,7 +523,9 @@ window.HuygensVis = (function () {
         else {
           labelEl.classList.remove('hide');
           labelEl.classList.toggle('dim', sp.dist > 4e9);
-          labelEl.style.transform = `translate(-50%,-130%) translate(${sp.x.toFixed(1)}px,${(sp.y - 8).toFixed(1)}px)`;
+          // 锚点 = 标记点本身（与天体标签同式）：旧的 −8px 是刻度线时代的余量，
+          // 线已移除，保留会把标签悬空抬高在标记点上方
+          labelEl.style.transform = `translate(-50%,-130%) translate(${sp.x.toFixed(1)}px,${sp.y.toFixed(1)}px)`;
         }
       }
     }

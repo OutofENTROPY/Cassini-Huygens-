@@ -724,25 +724,10 @@ body.event-open:not(.event-folded) #event-fab {
   opacity: 1; color: #ffffff;
   text-shadow: 0 0 7px rgba(0,0,0,.95), 0 0 12px rgba(200,222,255,.45);
 }
-/* 刻度线随标签一起半透明，悬停时同步提亮 */
-.label::after { opacity: .55; transition: opacity .25s var(--ease); }
-.label:hover::after, .label:focus-visible::after { opacity: 1; }
 .label.sc { color: var(--accent2); font-weight: 600; }
 .label.sc:hover, .label.sc:focus-visible {
   color: #ffc896;
   text-shadow: 0 0 7px rgba(0,0,0,.95), 0 0 12px rgba(255,178,110,.5);
-}
-/* Cassini 标签置于标记点下侧：刻度线朝上指向标记，与上侧的天体标签分离 */
-.label.sc::after { display: none; }
-.label.sc::before {
-  content: ""; display: block; width: 1px; height: 10px;
-  background: rgba(255,162,89,.50); margin: 0 auto 2px;
-  opacity: .55; transition: opacity .25s var(--ease);
-}
-.label.sc:hover::before, .label.sc:focus-visible::before { opacity: 1; }
-.label::after {
-  content: ""; display: block; width: 1px; height: 10px;
-  background: rgba(242,244,248,.4); margin: 2px auto 0;
 }
 /* 远距微缩标签：在半透明基础上再压暗，悬停一律恢复为完全提亮 */
 .label.dim { opacity: .3; }
