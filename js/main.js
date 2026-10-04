@@ -56,7 +56,7 @@
   // Huygens 标签点击 / 事件卡聚焦 → 视角跟随惠更斯（item 4）
   function pickHuygens() {
     setInfoBody(null);
-    cam.flyTo('huygens', { dist: Math.max(cam.currentDist(), 30) });
+    cam.flyTo('huygens');   // 保持当前视距（FOV 观感不变），仅切换聚焦目标
   }
   window.addEventListener('cassini-pick-huygens', pickHuygens);
 
@@ -100,7 +100,7 @@
       setInfoBody(null);   // 切换视角时收起星体状态卡（跟随 Cassini / 全局视角均不再指向某行星）
       if (v === 'follow') {
         cam.setMode('follow');
-        cam.flyTo('cassini', { dist: Math.max(cam.currentDist(), 3e5) });
+        cam.flyTo('cassini');   // 保持当前视距（FOV 观感不变），仅切回跟随 Cassini
       } else {
         cam.setMode('free');
         cam.flyTo('sun', { dist: 6.5e9, theta: 0.7, phi: 1.0 });
@@ -328,7 +328,7 @@
     const reg = scene.registry;
     if (name === 'cassini') {
       setInfoBody(null);
-      cam.flyTo('cassini', { dist: Math.max(cam.currentDist(), 3e5) });
+      cam.flyTo('cassini');   // 保持当前视距（FOV 观感不变），仅切换聚焦目标
       return;
     }
     if (name === 'huygens') {
@@ -338,19 +338,25 @@
     const b = reg.get(name);
     if (!b) return;
     setInfoBody(name);
-    cam.flyTo(name, { dist: b.radius * 6 });
+    // 从航天器（Cassini/Huygens）切到行星/卫星：视距按目标半径取值，
+    // 使其在画面中占比合适；行星/卫星之间切换则保持当前视距（FOV 观感不变）
+    const prevFocus = cam.currentFocus();
+    if (prevFocus === 'cassini' || prevFocus === 'huygens') {
+      cam.flyTo(name, { dist: b.radius * 6 });
+    } else {
+      cam.flyTo(name);
+    }
   }
 
-  /* 点击事件卡 / 时间轴节点：跳转时刻并聚焦 Cassini 本体（不聚焦行星，
-     事件天体仅作为镜头距离 zoom 的参考），同时收起星体状态卡 */
+  /* 点击事件卡 / 时间轴节点：跳转时刻并聚焦 Cassini 本体，同时收起星体状态卡。
+     保持当前视距（FOV 观感不变）：切换事件只换聚焦目标，不按事件预设 zoom 重置镜头 */
   function pickEvent(ev) {
     tl.setNow(ev.et + ET_UTC_OFF);
     tl.setPlaying(false);
     tl.refresh();
     showEventCard(ev);
-    const dist = ev.zoom || (scene.registry.get(ev.body) ? scene.registry.get(ev.body).radius * 8 : 1e6);
     setInfoBody(null);
-    cam.flyTo('cassini', { dist });
+    cam.flyTo('cassini');
     highlightEvent(ev);
     scrollToCurrentEvent();
   }
@@ -412,7 +418,7 @@
     // flyTo 将 focusName 立即改为 'cassini'，下一帧条件不再成立，只触发一次平滑过渡
     if (window.HuygensVis && cam.currentFocus() === 'huygens' && t < window.HuygensVis.SEP_ET) {
       setInfoBody(null);
-      cam.flyTo('cassini', { dist: Math.max(cam.currentDist(), 3e5) });
+      cam.flyTo('cassini');   // 保持当前视距（FOV 观感不变），仅切换聚焦目标
     }
 
     // 1) 绝对位置 → 2) 相机 → 3) 相对渲染
