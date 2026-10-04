@@ -669,16 +669,28 @@ body.event-open:not(.event-folded) #event-fab {
   will-change: transform;
   transition: transform 350ms cubic-bezier(.25, .1, .25, 1);
 }
-#load-pct { font-size: 11px; font-weight: 600; color: var(--text-dim); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+/* 主条两侧标签等宽 → 条恒在容器正中：左 = 白色实时百分比，右 = 灰色满刻度 100% */
+.load-pct {
+  min-width: 44px; flex: 0 0 auto;
+  font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.load-pct.cur { color: #ffffff; text-align: right; }
+.load-pct.max { color: var(--text-dim); text-align: left; }
 .load-stage { font-size: 11px; color: var(--text-dim); opacity: .75; text-align: center; margin-top: -6px; }
-.load-lbl { font-size: 11px; color: var(--text-dim); width: 52px; flex: 0 0 auto; }
+/* 标签 44px = 主行百分比标签宽度，保证细条与主条左右边界对齐 */
+.load-lbl { font-size: 11px; color: var(--text-dim); width: 44px; flex: 0 0 auto; white-space: nowrap; }
 .load-subpct { font-size: 11px; color: var(--text-dim); min-width: 44px; text-align: left; font-variant-numeric: tabular-nums; }
 /* 并行细条统一白色；完成时 .lit 辉光提亮 */
 #loadbar-tex-fill, #loadbar-model-fill { background: #e9f1ff; }
 .load-fill.lit { filter: brightness(1.25); box-shadow: 0 0 9px rgba(233, 241, 255, .8); }
 #loading-text {
-  font-size: 30px; font-weight: 700; color: var(--text-dim);
-  letter-spacing: 13px; text-indent: 13px;   /* 抵消末字母字距，保持光学居中 */
+  /* 宽度 = 进度条本体（容器 − 两侧百分比标签 44px×2 − 行内 gap 10px×2）：
+     首字母 L / 尾字母 G 压在条的两个边界上，字母间距随跨度收窄 */
+  width: calc(min(320px, 74vw) - 108px);
+  display: flex; justify-content: space-between;
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 38px; font-weight: 700; color: var(--text-dim);
   text-transform: uppercase;
 }
 /* 逐字母 opacity 脉冲，delay 随 --i 递增 → 亮波从左向右扫过。

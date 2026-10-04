@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Cassini–Huygens 历史飞行数据 · 3D 轨迹可视化 (1997–2017)</title>
-<link rel="stylesheet" href="css/style.css?v=2026422">
+<link rel="stylesheet" href="css/style.css?v=2026427">
 </head>
 <body>
 <div id="app">
@@ -187,8 +187,9 @@
     <div id="loading-text" aria-label="LOADING"><span style="--i:0">L</span><span style="--i:1">O</span><span style="--i:2">A</span><span style="--i:3">D</span><span style="--i:4">I</span><span style="--i:5">N</span><span style="--i:6">G</span></div>
     <div id="loadbars">
       <div class="load-row main">
+        <span class="load-pct cur" id="load-pct">0%</span>
         <div class="load-bar" id="loadbar-main"></div>
-        <span class="load-pct" id="load-pct">0%</span>
+        <span class="load-pct max">100%</span>
       </div>
       <div class="load-stage" id="load-stage">正在准备…</div>
       <div class="load-row sub">
