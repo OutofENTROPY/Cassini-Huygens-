@@ -1914,8 +1914,8 @@
     const show = cassTrail && trailK > 0.01;
     const recent = trailOptions.mode === 'recent';
     // —— abs（日心系）：网格起点 = 修剪后的烘焙末顶点，终点 = 当前时刻 ——
-    // 活动行星窗口内其透明度已在 updateSoiTrails 按 (1−k) 淡出（与相对系尾迹
-    // 交叉过渡）；此处始终重采样，可见性交给透明度门限。
+    // 亮度分层全部在 updateSoiTrails 完成（SOI 内压暗不隐藏）；此处始终重采样，
+    // 可见性交给透明度门限。
     let n = 0;
     if (show) {
       const tTail = trailT[tailIdxTail];
@@ -2942,9 +2942,11 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
      - 二级（卫星 SOI：Titan/Enceladus/…，仅 Saturn SOI 内存在）：进入卫星 SOI →
        绝对轨迹再降亮度、一级相对轨迹降亮度、二级相对轨迹淡入。
      亮度联动（对 opacity 乘子，逐帧平滑跟随 k 值，无突变）：
-       absDim = (1−0.45·k1)·(1−0.35·k2)，一级 ×(1−0.45·k2)，二级 = k2。
+       absDim = (1−0.30·k1)·(1−0.25·k2)，一级 ×(1−0.45·k2)，二级 = k2；
+       窗口激活时绝对轨迹再乘 (1−0.45·k1)。所有层压暗但不隐藏——绝对轨迹
+       与相对轨迹分属两个参考系，仅在飞船实际位置处相交，两者共存呈现。
      cassini 总开关关闭时隐藏全部相对轨迹（soiState 仍用于 HUD 相对速度显示）。 */
-  const ABS_DIM1 = 0.45, ABS_DIM2 = 0.35, REL_DIM2 = 0.45;
+  const ABS_DIM1 = 0.30, ABS_DIM2 = 0.25, REL_DIM2 = 0.45, ABS_DIM_WIN = 0.45;
   function updateSoiTrails(t) {
     const tfade = 1 - modelFade;   // 模型级特写时航天器轨迹整体淡出（含相对轨迹）
     let bestName = null, bestK = 0;
@@ -3032,43 +3034,26 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     soiState.moon = bestMK > 0.02 ? bestMoon : null;
     soiState.k2 = bestMK;
 
-    /* —— 活动行星窗口：日心轨迹让位（时间域裁剪）——
-     * 相对轨迹（行星锚定）与日心轨迹是两个参考系，仅在实际位置处相交。旧实现
-     * 两者叠加显示（日心仅降 45% 亮度），在发射逃逸这类【长窗口】（地球窗口
-     * 58.5 h）中，行星自窗口起点起的运动使相对轨迹相对日心轨迹剪切偏移达
-     * 数千 km 且随回放增长——两条「已飞轨迹」在飞船处以大角相交并各自伸向
-     * 不同方向，加上未来段的同样分歧，放大后即用户反馈的 launch 附近折线。
-     * 修复：窗口激活（t 在窗口时间域内且 k>0）时，日心轨迹的已飞段裁剪到
-     * 窗口起点 i0、未来段自窗口终点 i1+1 起画，窗口时间域内由相对轨迹
-     * （窗口线 + 动态尾迹，同一剪切系、连续）独家呈现——与 NASA Eyes 的
-     * 「进入 SOI 后显示相对轨迹」语义一致。窗口外日心轨迹照常。 */
+    /* —— 活动行星窗口：绝对轨迹再压暗（不隐藏）——
+     * 相对轨迹（行星锚定、剪切到行星当前帧）与绝对（日心）轨迹是两个参考系，
+     * 仅在实际位置处相交；长窗口（地球发射逃逸 58.5 h）内两者随行星运动剪切
+     * 分离达数千 km，属物理事实而非渲染缺陷。语义为 NASA Eyes 式分层呈现：
+     * 进入 SOI → 相对轨迹淡入为主呈现，绝对轨迹持续可见但逐层压暗——
+     * absDim（基础 30%+25% 层级）之外，窗口激活时再乘 (1−0.45·k)（k→1 时
+     * 合成亮度约 0.37，主次分明且轨迹始终清晰可见）；k→0 平滑回补，无突跳。
+     * 此前一版曾将窗口时间域内的日心轨迹按 drawRange 完全让位给相对轨迹，
+     * 用户反馈绝对轨迹「被删除」——已回退为纯亮度分层。 */
     let actWin = null;
     if (showRel && bestName && bestK > 0.001) {
       const spBest = soiPlanets.get(bestName);
       actWin = spBest ? soiWindowAt(spBest, t) : null;
     }
     soiState.win = actWin || null;
-    if (actWin && actWin.i0 !== undefined) {
-      const i0 = actWin.i0;
-      const i1 = Math.min(actWin.i0 + actWin.n - 1, trailN - 1);
-      // reveal：深入 SOI（k→1）时窗口时间域内的日心轨迹完全让位；临出 SOI
-      // （k→0，相对轨迹随之淡出）时按比例回补，避免轨迹先消失再突现。
-      const reveal = THREE.MathUtils.clamp((1 - bestK) / 0.4, 0, 1);
-      const startIdx = trailOptions.mode === 'recent' ? lowerBound(trailT, t - RECENT_SPAN) : 0;
-      const flownEnd = Math.round(i0 + (tailIdxTail - i0) * reveal);
-      const flownCount = Math.max(0, flownEnd + 1 - startIdx);
-      trailFlownLine.visible = trailFlownLine.visible && flownCount >= 2;
-      if (trailFlownLine.visible) {
-        trailFlownLine.geometry.setDrawRange(startIdx, Math.min(flownCount, tailIdxTail + 1 - startIdx));
-      }
-      const futBase = Math.min(i1 + 1, trailN);
-      const futStart = Math.max(idxNow + 1, Math.round(futBase - (futBase - (idxNow + 1)) * reveal));
-      trailFullLine.visible = trailFullLine.visible && futStart < trailN - 1;
-      if (trailFullLine.visible) {
-        trailFullLine.geometry.setDrawRange(futStart, trailN - futStart);
-      }
-      // 日心尾迹在窗口内按 (1−k) 淡出、相对尾迹按 k 淡入——交叉过渡无突跳
-      tailAbs.material.opacity *= (1 - bestK);
+    if (actWin) {
+      const dimWin = 1 - ABS_DIM_WIN * bestK;
+      trailFullLine.material.opacity *= dimWin;
+      trailFlownLine.material.opacity *= dimWin;
+      tailAbs.material.opacity *= dimWin;
     }
   }
 
