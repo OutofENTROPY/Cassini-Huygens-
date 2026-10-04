@@ -460,15 +460,18 @@ window.CassiniModel = (function () {
     const data = window.CassiniGLBData;
     if (!data || !data.eyes || !THREE.GLTFLoader) { console.error('CassiniModel: data/models.js 或 GLTFLoader 未就绪'); return; }
 
+    const L = window.CassiniLoader;   // 加载页进度（js/loader.js）：模型解析细条
     const done = (parts) => { if (cb) cb(parts); };
 
     if (pending) { pending.then(done); return; }
 
     const loader = new THREE.GLTFLoader();
+    if (L) L.modelStep(0.08);
 
     pending = new Promise((resolve, reject) => {
       loader.parse(b64ToBuffer(data.eyes), '', (gltf) => resolve(gltf.scene), reject);
     }).then((src) => {
+      if (L) L.modelStep(0.75);
       enhanceMaterials(src, 'sc');
       const stack = wrapModel(src, 0.0180, 'cassiniStack');   // 全长（磁强计双杆跨距 17.98 m）
 
@@ -495,6 +498,9 @@ window.CassiniModel = (function () {
     }).catch((err) => {
       console.error('CassiniModel: GLB 装载失败', err);
       return { stack: null, orbiter: null, probe: null };
+    }).then((parts) => {
+      if (L) L.modelStep(1);   // 失败路径也放行，不阻塞加载页收尾
+      return parts;
     });
     pending.then(done);
   }

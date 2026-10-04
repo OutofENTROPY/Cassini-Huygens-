@@ -177,33 +177,32 @@
   </div>
 
   <div id="loading">
-    <!-- miuix 转圈：圆头弧段绕环旋转。旋转由外层 div 承载（独立合成层动画，
-         启动期主线程被大体积数据脚本占满时仍流畅转动），svg 只负责绘制 -->
-    <div class="load-ring" aria-hidden="true">
-      <svg viewBox="0 0 50 50">
-        <circle cx="25" cy="25" r="20" fill="none" stroke="rgba(92,157,255,.14)" stroke-width="3.5"/>
-        <circle cx="25" cy="25" r="20" fill="none" stroke="#5c9dff" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="34 92"/>
-      </svg>
-    </div>
+    <!-- 三条实时进度条：主条 = 下载/eval → 场景构建（分段堆叠，颜色 = 资源组，
+         段宽 = 字节真实占比，见 js/loader.js）；两条细条 = 与主链并行的
+         纹理解码、GLB 模型解析。分段 fill 走 transform 合成器动画，启动期
+         主线程被大体积数据脚本占满时依然平滑（loader 控制爬行与校正）。
+         分段 div 由 loader.js 按资源组动态生成 -->
     <div id="loading-text">LOADING</div>
+    <div id="loadbars">
+      <div class="load-row main">
+        <div class="load-bar" id="loadbar-main"></div>
+        <span class="load-pct" id="load-pct">0%</span>
+      </div>
+      <div class="load-stage" id="load-stage">正在准备…</div>
+      <div class="load-row sub">
+        <span class="load-lbl">纹理解码</span>
+        <div class="load-bar thin"><div class="load-fill" id="loadbar-tex-fill"></div></div>
+        <span class="load-subpct" id="load-pct-tex">等待中</span>
+      </div>
+      <div class="load-row sub">
+        <span class="load-lbl">模型解析</span>
+        <div class="load-bar thin"><div class="load-fill" id="loadbar-model-fill"></div></div>
+        <span class="load-subpct" id="load-pct-model">等待中</span>
+      </div>
+    </div>
   </div>
 </div>
 
-<script src="lib/three.min.js?v=2026094"></script>
-<script src="lib/GLTFLoader.js?v=2026103"></script>
-<script src="data/textures.js?v=2026401"></script>
-<script src="data/stars.js?v=2026094"></script>
-  <script src="data/cassini_data.js?v=2026104"></script>
-  <script src="data/moons_data.js?v=2026104"></script>
-<script src="data/models.js?v=2026303"></script>
-<script src="data/attitude_data.js?v=2026301"></script>
-<script src="js/events.js?v=2026404"></script>
-<script src="js/textures.js?v=2026103"></script>
-<script src="js/huygens.js?v=20261003e"></script>
-<script src="js/cassini_model.js?v=2026305"></script>
-<script src="js/scene.js?v=2026110"></script>
-<script src="js/camera.js?v=2026403"></script>
-<script src="js/timeline.js?v=2026125"></script>
-<script src="js/main.js?v=2026309"></script>
+<script src="js/loader.js?v=2026416"></script>
 </body>
 </html>

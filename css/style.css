@@ -642,17 +642,37 @@ body.event-open:not(.event-folded) #event-fab {
 #loading {
   position: absolute; inset: 0; z-index: 40;
   background: var(--bg);
-  display: flex; flex-direction: column; gap: 20px;
+  display: flex; flex-direction: column; gap: 18px;
   align-items: center; justify-content: center;
   transition: opacity .5s;
 }
 #loading.done { opacity: 0; pointer-events: none; }
-/* miuix 转圈加载：整环淡蓝轨道 + 圆头主色弧段旋转。
-   旋转挂在 div 包装层并 will-change 提升为独立合成层：启动期主线程被数十 MB
-   base64 数据脚本的解析 / atob 解码长时间占满，合成器动画不被阻塞、不再卡顿 */
-.load-ring { width: 46px; height: 46px; display: block; will-change: transform; animation: spin 0.9s linear infinite; }
-.load-ring svg { width: 100%; height: 100%; display: block; }
-@keyframes spin { to { transform: rotate(360deg); } }
+/* 三条实时进度条（js/loader.js 驱动）：主条分段堆叠（颜色 = 资源组、段宽 =
+   字节真实占比），两条细条 = 并行的纹理解码 / GLB 模型解析。
+   fill 只动 transform: scaleX 且 will-change 提升为独立合成层——启动期主线程
+   被数十 MB 数据脚本 eval 占满时依然平滑；transition 时长由 loader 按事件
+   动态设定（事件跟随 250ms / 爬行补位最长 2.6s），事件到来即校正到真实位置 */
+#loadbars { width: min(320px, 74vw); display: flex; flex-direction: column; gap: 9px; }
+.load-row { display: flex; align-items: center; gap: 10px; }
+.load-row.main { margin-bottom: -2px; }
+.load-bar {
+  flex: 1; height: 9px; border-radius: 5px; overflow: hidden;
+  background: rgba(92, 157, 255, .10);
+  display: flex;                       /* 分段槽并排（仅主条），宽度 = 字节占比 */
+}
+.load-bar.thin { height: 5px; border-radius: 3px; flex: 1; }
+.load-seg { height: 100%; flex: 0 0 auto; padding-right: 1px; }   /* 1px 段间缝 */
+.load-seg:last-child { padding-right: 0; }
+.load-fill {
+  width: 100%; height: 100%; border-radius: inherit;
+  transform: scaleX(0); transform-origin: left center;
+  will-change: transform;
+  transition: transform 350ms cubic-bezier(.25, .1, .25, 1);
+}
+#load-pct { font-size: 11px; font-weight: 600; color: var(--text-dim); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+.load-stage { font-size: 11px; color: var(--text-dim); opacity: .75; text-align: center; margin-top: -6px; }
+.load-lbl { font-size: 11px; color: var(--text-dim); width: 52px; flex: 0 0 auto; }
+.load-subpct { font-size: 11px; color: var(--text-dim); min-width: 44px; text-align: left; font-variant-numeric: tabular-nums; }
 #loading-text {
   font-size: 12px; font-weight: 600; color: var(--text-dim);
   letter-spacing: 5px; text-indent: 5px;   /* 抵消末字母字距，保持光学居中 */

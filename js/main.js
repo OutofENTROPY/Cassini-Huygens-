@@ -39,6 +39,7 @@
 
   // ---------- 初始化 ----------
   scene.init(canvas, labelsEl, onBodyPicked);
+  if (window.CassiniLoader) window.CassiniLoader.sceneBuilt();   // 加载页：场景构建完成，纹理/模型细条开跑
   cam.init(canvas);
   tl.init({ tStart: T_START, tEnd: T_END, onChange: onTimeChange });
   // 默认轨迹显示：未来轨迹关闭，历史轨迹仅近期
@@ -522,8 +523,8 @@
     cam.intro(5.2);
   }
   requestAnimationFrame(loop);
-  setTimeout(() => loadingEl.classList.add('done'), 500);
-  setTimeout(() => { loadingEl.style.display = 'none'; }, 900);
+  // 加载页收尾：等三条进度条全部 100%（下载/构建 + 纹理解码 + 模型解析）才淡出
+  if (window.CassiniLoader) window.CassiniLoader.finish();
   } catch (e) {
     fatal(e && (e.stack || e.message) || String(e));
   }

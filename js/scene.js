@@ -1209,7 +1209,11 @@
   function loadTex(name, aniso) {
     const url = TEXDATA[name];
     if (!url) return null;
-    const tex = texLoader().load(url);
+    // 加载页进度（js/loader.js）：纹理解码细条按张计程
+    if (window.CassiniLoader) window.CassiniLoader.texStart(name);
+    const tex = texLoader().load(url, () => {
+      if (window.CassiniLoader) window.CassiniLoader.texDone(name);
+    });
     tex.encoding = THREE.sRGBEncoding;
     if (aniso) tex.anisotropy = aniso;
     return tex;
