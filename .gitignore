@@ -14,3 +14,6 @@ tools/shots/
 
 # build_textures.py 中间产物
 textures/pack_*
+
+# Node 本地依赖（tools 探针脚本用）
+node_modules/
