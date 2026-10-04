@@ -222,7 +222,7 @@ body { touch-action: manipulation; }
    #hud / #body-info 作为流内子项依次排在下方，间距恒定、不再相互重叠；
    显隐统一由 body.hud-open 控制（初始状态 JS 设定：桌面展开、移动端收起） */
 #hud-stack {
-  position: absolute; left: 18px; top: 66px; z-index: 9;
+  position: absolute; left: 18px; top: 62px; z-index: 9;
   display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
   pointer-events: none;   /* 容器不产生可点击空白区，画布拖拽可穿透 */
 }
@@ -575,13 +575,17 @@ body.event-open:not(.event-folded) #event-fab {
 
   /* 右上角收窄：跟随按钮缩小 + 图标钮 32px，保证左侧「Cassini–Huygens /
      历史飞行数据」稳定为两行而不是三行 */
-  #view-buttons .view-btn { padding: 5px 11px; font-size: 11.5px; }
+  /* 跟随按钮与右侧图标钮等高（32px），文字垂直居中 */
+  #view-buttons .view-btn {
+    height: 32px; padding: 0 11px; font-size: 11.5px;
+    display: inline-flex; align-items: center;
+  }
   #btn-help, #btn-settings, #btn-fullscreen { width: 32px; height: 32px; }
   #btn-help svg, #btn-settings svg, #btn-fullscreen svg { width: 16px; height: 16px; }
   #hud-right { gap: 6px; margin-left: 8px; }
 
   /* 状态卡片折叠：初始状态由 JS 设定（移动端收起），点左上角 ◉ 切换显隐 */
-  #hud-stack { left: 10px; top: 56px; z-index: 10; gap: 8px; }
+  #hud-stack { left: 10px; top: 52px; z-index: 10; gap: 8px; }
   #hud { padding: 8px 12px; min-width: 0; max-width: calc(100vw - 90px); }
   #hud-date { font-size: 14px; }
   #body-info { max-width: calc(100vw - 90px); }
@@ -621,7 +625,7 @@ body.event-open:not(.event-folded) #event-fab {
       max-height: calc(100vh - 206px);
       max-height: calc(100dvh - 206px);
     }
-    #hud-stack { top: 48px; }
+    #hud-stack { top: 46px; }
     #rate-wrap { width: 46vw; }
   }
 }
