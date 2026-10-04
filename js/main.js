@@ -394,6 +394,13 @@
       lastEventIdx = idx;
       EVENTS.forEach((x, i) => x._item && x._item.classList.toggle('current', i === idx));
       tl.markPast(EVENTS, t);
+      // 时间越过任务事件：自动把该事件说明装入事件卡并保持折叠（通知按钮常驻，呼吸提示）；
+      // 回退到首事件之前则隐藏事件卡、熄灭通知按钮
+      if (idx >= 0) showEventCard(EVENTS[idx]);
+      else {
+        eventCard.classList.add('hidden');
+        document.body.classList.remove('event-open');
+      }
     }
   }
 

@@ -173,13 +173,17 @@ body { touch-action: manipulation; }
   backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), var(--shadow-2);
   transform-origin: top right;
-  animation: panel-in .28s var(--spring);
+  /* 开合双向过渡：display 走 allow-discrete，收起时等淡出结束再移除渲染树 */
+  opacity: 1; transform: none;
+  transition: opacity .22s var(--ease), transform .25s var(--spring), display .3s allow-discrete;
 }
-@keyframes panel-in {
-  from { opacity: 0; transform: scale(0.92) translateY(-6px); }
-  to   { opacity: 1; transform: scale(1) translateY(0); }
+#settings-panel.hidden {
+  display: none; opacity: 0;
+  transform: scale(0.92) translateY(-6px);
 }
-#settings-panel.hidden { display: none; }
+@starting-style {
+  #settings-panel:not(.hidden) { opacity: 0; transform: scale(0.92) translateY(-6px); }
+}
 .set-label {
   font-size: 10px; font-weight: 600; color: var(--text-dim);
   letter-spacing: 2px; text-transform: uppercase;
@@ -230,8 +234,16 @@ body { touch-action: manipulation; }
   backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), var(--shadow-1);
   min-width: 216px;
+  /* ◉ 开合双向过渡（弹出 / 收起均有动画） */
+  opacity: 0; transform: translateY(-8px) scale(0.97);
+  transition: opacity .25s var(--ease), transform .3s var(--spring), display .3s allow-discrete;
 }
-body.hud-open #hud { display: block; }
+body.hud-open #hud {
+  display: block; opacity: 1; transform: none;
+}
+@starting-style {
+  body.hud-open #hud { opacity: 0; transform: translateY(-8px) scale(0.97); }
+}
 #hud-date {
   font-size: 17px; font-weight: 600; color: var(--primary-bright);
   letter-spacing: 0.4px; font-variant-numeric: tabular-nums;
@@ -249,9 +261,17 @@ body.hud-open #hud { display: block; }
   backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), var(--shadow-1);
   min-width: 216px; max-width: 264px;
+  /* 与 #hud 一致的双向过渡 */
+  opacity: 0; transform: translateY(-8px) scale(0.97);
+  transition: opacity .25s var(--ease), transform .3s var(--spring), display .3s allow-discrete;
 }
 #body-info.hidden { display: none; }
-body.hud-open #body-info:not(.hidden) { display: block; }
+body.hud-open #body-info:not(.hidden) {
+  display: block; opacity: 1; transform: none;
+}
+@starting-style {
+  body.hud-open #body-info:not(.hidden) { opacity: 0; transform: translateY(-8px) scale(0.97); }
+}
 #bi-name { font-size: 14px; font-weight: 600; color: var(--primary-bright); letter-spacing: 0.4px; }
 #bi-rows { margin-top: 8px; }
 #bi-rows .bi-row {
@@ -297,11 +317,12 @@ body.event-folded #event-card { opacity: 0; transform: translateY(16px) scale(0.
 #event-title { font-size: 16px; margin: 6px 0 8px; font-weight: 600; letter-spacing: 0.2px; }
 #event-text { font-size: 12.8px; line-height: 1.75; color: var(--text-2); }
 
-/* 事件卡通知按钮：点击任务事件后弹出，固定在左上角 ◉ 详情按钮右侧（手机 / 桌面一致，
-   absolute 挂在 #hud-stack 内与 ◉ 对齐，不挤压下方卡片流式布局）。
-   点按展开事件卡、再点收起——按钮常驻不消失；展开期间主色高亮，收起后呼吸闪烁提示 */
+/* 事件卡通知按钮：常驻左上角 ◉ 详情按钮右侧（手机 / 桌面一致，absolute 挂在
+   #hud-stack 内与 ◉ 对齐，不挤压下方卡片流式布局）。时间越过任务事件时自动
+   装入事件说明并保持折叠；点按展开 / 再点收起——有折叠中的事件说明时呼吸
+   闪烁提示，展开期间主色高亮 */
 #event-fab {
-  display: none;
+  display: flex;
   position: absolute; left: 46px; top: 0; z-index: 11;
   width: 36px; height: 36px; border-radius: 50%;
   align-items: center; justify-content: center;
@@ -314,26 +335,27 @@ body.event-folded #event-card { opacity: 0; transform: translateY(16px) scale(0.
 #event-fab svg { width: 16px; height: 16px; flex: none; }
 #event-fab:hover { color: var(--text); background: var(--glass-hover); }
 #event-fab:active { transform: scale(0.96); }
-body.event-open #event-fab { display: flex; }
-/* 弹出动画：首次出现时缩放淡入（display 切换触发一次，收展切换不重播） */
-@keyframes fab-in {
-  from { opacity: 0; transform: scale(0.6); }
-  to   { opacity: 1; transform: scale(1); }
-}
-/* 收起状态：呼吸闪烁提示事件卡收在按钮中 */
+/* 折叠状态：整个按钮蓝色闪烁提示事件卡收在按钮中（底色/描边脉动，不变透明） */
 body.event-open.event-folded #event-fab {
-  animation: fab-in .28s var(--spring), fab-breathe 2.2s ease-in-out .3s infinite;
+  animation: fab-breathe 2.2s ease-in-out infinite;
 }
 /* 展开状态：主色高亮（与 ◉ 展开态一致），提示卡片当前展开、再点收起 */
 body.event-open:not(.event-folded) #event-fab {
-  animation: fab-in .28s var(--spring);
   color: var(--primary-bright);
   background: var(--primary-soft);
   border-color: rgba(52, 130, 255, 0.45);
 }
 @keyframes fab-breathe {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(52,130,255,.50), var(--shadow-1); }
-  50%      { box-shadow: 0 0 0 9px rgba(52,130,255,0), var(--shadow-1); }
+  0%, 100% {
+    background-color: var(--glass);
+    border-color: var(--stroke);
+    color: var(--text-2);
+  }
+  50% {
+    background-color: var(--primary-soft);
+    border-color: rgba(52, 130, 255, 0.45);
+    color: var(--primary-bright);
+  }
 }
 
 /* ---------- 事件列表 ---------- */
@@ -616,8 +638,14 @@ body.event-open:not(.event-folded) #event-fab {
   display: flex; align-items: center; justify-content: center;
   padding: 16px;
   backdrop-filter: blur(20px) saturate(1.3); -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  /* 开合双向过渡：背景淡入淡出 + 卡片缩放上浮 */
+  opacity: 1;
+  transition: opacity .3s var(--ease), display .35s allow-discrete;
 }
-#help-modal.hidden { display: none; }
+#help-modal.hidden { display: none; opacity: 0; }
+@starting-style {
+  #help-modal:not(.hidden) { opacity: 0; }
+}
 #help-box {
   width: 472px; max-width: 100%;
   max-height: calc(100vh - 32px);
@@ -628,6 +656,11 @@ body.event-open:not(.event-folded) #event-fab {
   border-radius: var(--r-lg); padding: 26px 30px;
   backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), var(--shadow-2);
+  transition: opacity .25s var(--ease), transform .3s var(--spring);
+}
+#help-modal.hidden #help-box { opacity: 0; transform: scale(0.95) translateY(12px); }
+@starting-style {
+  #help-modal:not(.hidden) #help-box { opacity: 0; transform: scale(0.95) translateY(12px); }
 }
 /* 移动端：触摸操作说明替换桌面（鼠标）说明，标题同步切换 */
 .ht-m, #help-list-m { display: none; }
