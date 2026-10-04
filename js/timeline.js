@@ -47,8 +47,15 @@
     el.dateHm = document.getElementById('time-hm');
 
     el.play.addEventListener('click', togglePlay);
+    // 空格：播放 / 暂停；方向键：时间倍率沿阶梯升 / 降一档（↑/→ 升，↓/← 降）。
+    // 焦点在输入框（含速率滑块本身）时交给原生行为，避免双重步进
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space' && !e.target.closest('input,textarea')) {
+      if (e.target.closest && e.target.closest('input,textarea,select')) return;
+      const step = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[e.code];
+      if (step) {
+        e.preventDefault();
+        setRateValue((parseInt(el.rate.value, 10) || 0) + step);
+      } else if (e.code === 'Space') {
         e.preventDefault(); togglePlay();
       }
     });

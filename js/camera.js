@@ -23,6 +23,7 @@
   let dragging = 0;
   let lastX = 0, lastY = 0;
   let lastUpdate = 0;
+  const keys = new Set();      // 按住中的键盘控制键（WASD 旋转 / Shift·Ctrl 缩放）
 
   const MIN_DIST = 0.001;      // 1 m —— 飞船贴图细节级特写（模型跨距 ~18 m，可贴近检视
                                // 金箔褶皱/天线表面；近裁面 1 cm，对数深度下渲染稳定）
@@ -118,6 +119,19 @@
       }
     }, { passive: true });
     canvas.addEventListener('touchend', () => { dragging = 0; touchDist = 0; });
+
+    // 键盘视角控制（电脑端）：按住 W/A/S/D 旋转、Shift/Ctrl 推近拉远，
+    // update() 中按帧率折算持续生效；焦点在输入框时不劫持，失焦清空避免按键卡死
+    window.addEventListener('keydown', (e) => {
+      const t = e.target;
+      if (t && t.closest && t.closest('input,textarea,select')) return;
+      const c = e.code;
+      if (c === 'KeyW' || c === 'KeyA' || c === 'KeyS' || c === 'KeyD' ||
+          c === 'ShiftLeft' || c === 'ShiftRight' ||
+          c === 'ControlLeft' || c === 'ControlRight') keys.add(c);
+    });
+    window.addEventListener('keyup', (e) => keys.delete(e.code));
+    window.addEventListener('blur', () => keys.clear());
   }
 
   function focus(name, opts) {
@@ -232,6 +246,26 @@
     // 不再叠加指数缓动的二次牵引——缓动曲线按设计执行，落点与速度连续。
     const dtS = lastUpdate ? Math.min(0.1, Math.max(0, (now - lastUpdate) / 1000)) : 1 / 60;
     lastUpdate = now;
+
+    // 键盘持续控制：与拖拽/滚轮一致只改目标角/目标距，平滑交给下方指数缓动；
+    // 有键按下即打断飞掠动画（intro/flyTo），改为手动控制
+    if (keys.size) {
+      const rot = 1.8 * dtS;                 // 旋转角速度 ~103°/s
+      const zk = Math.exp(2.0 * dtS);        // 缩放速率 ~7.4x/s（对数尺度）
+      let acted = false;
+      if (keys.has('KeyA')) { state.theta -= rot; acted = true; }
+      if (keys.has('KeyD')) { state.theta += rot; acted = true; }
+      if (keys.has('KeyW')) { state.phi = Math.max(0.02, state.phi - rot); acted = true; }
+      if (keys.has('KeyS')) { state.phi = Math.min(Math.PI - 0.02, state.phi + rot); acted = true; }
+      if (keys.has('ShiftLeft') || keys.has('ShiftRight')) {
+        state.dist = Math.max(minDistForFocus(), Math.min(MAX_DIST, state.dist / zk)); acted = true;   // 放大 = 推近
+      }
+      if (keys.has('ControlLeft') || keys.has('ControlRight')) {
+        state.dist = Math.max(minDistForFocus(), Math.min(MAX_DIST, state.dist * zk)); acted = true;   // 缩小 = 拉远
+      }
+      if (acted) state.anim = null;
+    }
+
     const smRot = 1 - Math.exp(-dtS * 16);
     const sm = 1 - Math.exp(-dtS * 16);
     if (!state.anim) {
