@@ -64,8 +64,9 @@
       return { segs: [], min: -Infinity, max: Infinity, at(t, out) { out[0] = 0; out[1] = 0; out[2] = 0; return out; } };
     }
     const useCR = interp === 'cr';
+    const useCRP = interp === 'crp';
     const segs = segsRaw.map(s => ({
-      t0: s.t0, dt: s.dt, n: s.n, xyz: b64ToFloat32(s.d), cr: useCR,
+      t0: s.t0, dt: s.dt, n: s.n, xyz: b64ToFloat32(s.d), cr: useCR, crp: useCRP,
     })).sort((a, b) => b.dt - a.dt);
     const last = segs[segs.length - 1];
     return {
@@ -90,13 +91,21 @@
         let f = (t - seg.t0) / seg.dt;
         if (f < 0) f = 0; if (f > seg.n - 1) f = seg.n - 1;
         const i = Math.min(seg.n - 2, Math.floor(f));
-        if (seg.cr) {
+        if (seg.cr || seg.crp) {
           const s = f - i;
           const i0 = i > 0 ? i - 1 : 0;
           const i3 = i + 2 <= seg.n - 1 ? i + 2 : seg.n - 1;
           const o0 = i0 * 3, o1 = i * 3, o2 = (i + 1) * 3, o3 = i3 * 3;
           for (let k = 0; k < 3; k++) {
-            const a0 = seg.xyz[o0 + k], a1 = seg.xyz[o1 + k], a2 = seg.xyz[o2 + k], a3 = seg.xyz[o3 + k];
+            let a0 = seg.xyz[o0 + k], a1 = seg.xyz[o1 + k], a2 = seg.xyz[o2 + k], a3 = seg.xyz[o3 + k];
+            if (seg.crp) {
+              // 行星变体：端点区间用镜像外推切线（a0=2a1−a2 / a3=2a2−a1）。标准钳制
+              // （a0=a1 / a3=a2）使端点切线只有半弦速——地球段首区间恰好覆盖发射
+              // 逃逸段，t=起+67s 处即产生 5,294 km 的欠速偏差。卫星不得改用：烘焙端
+              // moon_cr 与本函数钳制版逐位一致（卫星 SOI 零偏差前提）。
+              if (i === 0) a0 = 2 * a1 - a2;
+              if (i === seg.n - 2) a3 = 2 * a2 - a1;
+            }
             out[k] = 0.5 * ((2.0 * a1) + (a2 - a0) * s
               + (2.0 * a0 - 5.0 * a1 + 4.0 * a2 - a3) * s * s
               + (3.0 * a1 - a0 - 3.0 * a2 + a3) * s * s * s);
@@ -299,6 +308,11 @@
   }
   const _anchRel = [0, 0, 0];
   const _anchBody = [0, 0, 0];
+  const _anchParent = [0, 0, 0];   // frameAnchorAt 父体专用暂存——不可复用 _anchBody：
+                                   // 调用方（writeTailLine/cassiniPosAt）常以 _anchBody
+                                   // 作 out 传入，若父体也写入 _anchBody 会先覆盖掉
+                                   // entry.track 的结果再自加 → 卫星锚返回 2×父体，
+                                   // 卫星相对尾迹整体错位（Ta 接缝 14,960 km 的根因）
 
   function anchorEvalAt(tk, t, out) {
     // Clénshaw 递推（与烘焙端 np.chebval 同约定）；窗口二分（时间有序不重叠）
@@ -331,12 +345,36 @@
     if (entry.parent) {
       const p = registry.get(entry.parent);
       if (p && p.track) {
-        p.track.at(t, _anchBody);
-        out[0] += _anchBody[0]; out[1] += _anchBody[1]; out[2] += _anchBody[2];
+        p.track.at(t, _anchParent);
+        out[0] += _anchParent[0]; out[1] += _anchParent[1]; out[2] += _anchParent[2];
       }
     }
     return out;
   }
+
+  /* 主轨迹折线插值（与渲染顶点同一 f64 来源，逐位一致） */
+  function mainTrailAt(t, out) {
+    let lo = 0, hi = trailN - 1;
+    if (t <= trailT[0]) { lo = 0; hi = 1; }
+    else if (t >= trailT[trailN - 1]) { lo = trailN - 2; hi = trailN - 1; }
+    else {
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (trailT[mid] <= t) lo = mid; else hi = mid; }
+    }
+    const a = (t - trailT[lo]) / (trailT[hi] - trailT[lo] || 1);
+    const o = lo * 3, o2 = hi * 3;
+    out[0] = trailThree[o] + (trailThree[o2] - trailThree[o]) * a;
+    out[1] = trailThree[o + 1] + (trailThree[o2 + 1] - trailThree[o + 1]) * a;
+    out[2] = trailThree[o + 2] + (trailThree[o2 + 2] - trailThree[o + 2]) * a;
+    return out;
+  }
+
+  /* 锚定轨道窗口边缘融合宽度（s）：锚定路径（真历表 + rel cheb）与渲染折线
+   * （f32 顶点）存在 ±10~20 km 的量化层差，在窗口进入/离开时刻表现为尾迹
+   * 末端 ~30 km 的横向阶跃折角（发射段 t=起+60s 处即用户反馈的残折）。
+   * 边缘 BLEND 秒内按 smoothstep 混回主轨迹折线（边缘处逐位贴合），中段
+   * 保持锚定轨道的亚顶点平滑。 */
+  const ANCHOR_BLEND = 1800.0;
+  const _polyP = [0, 0, 0];
 
   function cassiniPosAt(t, out) {
     // 锚定轨道优先（模型定位精度）；未命中窗口 → 主轨迹线性插值
@@ -357,22 +395,20 @@
           out[0] = b[0] + v[0];
           out[1] = b[1] + v[1];
           out[2] = b[2] + v[2];
+          const edge = Math.min(t - w.a, w.b - t);
+          if (edge < ANCHOR_BLEND) {
+            const u = edge / ANCHOR_BLEND;
+            const uu = u * u * (3 - 2 * u);
+            mainTrailAt(t, _polyP);
+            out[0] = _polyP[0] + (out[0] - _polyP[0]) * uu;
+            out[1] = _polyP[1] + (out[1] - _polyP[1]) * uu;
+            out[2] = _polyP[2] + (out[2] - _polyP[2]) * uu;
+          }
           return out;
         }
       }
     }
-    let lo = 0, hi = trailN - 1;
-    if (t <= trailT[0]) { lo = 0; hi = 1; }
-    else if (t >= trailT[trailN - 1]) { lo = trailN - 2; hi = trailN - 1; }
-    else {
-      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (trailT[mid] <= t) lo = mid; else hi = mid; }
-    }
-    const a = (t - trailT[lo]) / (trailT[hi] - trailT[lo] || 1);
-    const o = lo * 3, o2 = hi * 3;
-    out[0] = trailThree[o] + (trailThree[o2] - trailThree[o]) * a;
-    out[1] = trailThree[o + 1] + (trailThree[o2 + 1] - trailThree[o + 1]) * a;
-    out[2] = trailThree[o + 2] + (trailThree[o2 + 2] - trailThree[o + 2]) * a;
-    return out;
+    return mainTrailAt(t, out);
   }
   function trailIndexAt(t) {
     let lo = 0, hi = trailN - 1;
@@ -1340,7 +1376,11 @@
         name: def.name,
         radius: def.radius,
         label: def.label,
-        track: DATA.bodies[def.name] ? makeTrack(DATA.bodies[def.name].segs, DATA.bodies[def.name].interp) : null,
+        // 行星历表默认 Catmull-Rom：6h/24h 线性插值的弧高差达 355 km（地球），
+        // 使锚定轨道（earthLin + rel cheb）相对主轨迹持续漂移、且在窗口进入时刻
+        // （t=轨道起点+60s）产生 ~30 km 的横向跳变——放大回放时表现为轨迹末端
+        // 折曲/标记抖动。CR 弧高差 <1e-4 km，卫星链路已同款（interp='cr'）。
+        track: DATA.bodies[def.name] ? makeTrack(DATA.bodies[def.name].segs, DATA.bodies[def.name].interp || 'crp') : null,
         orbitLine: DATA.bodies[def.name] ? DATA.bodies[def.name].o : null,
         parent: DATA.bodies[def.name] ? DATA.bodies[def.name].parent || null : null,
         world: [0, 0, 0],
@@ -1874,6 +1914,8 @@
     const show = cassTrail && trailK > 0.01;
     const recent = trailOptions.mode === 'recent';
     // —— abs（日心系）：网格起点 = 修剪后的烘焙末顶点，终点 = 当前时刻 ——
+    // 活动行星窗口内其透明度已在 updateSoiTrails 按 (1−k) 淡出（与相对系尾迹
+    // 交叉过渡）；此处始终重采样，可见性交给透明度门限。
     let n = 0;
     if (show) {
       const tTail = trailT[tailIdxTail];
@@ -1883,8 +1925,8 @@
         tailPts[n * 3] = _tailP[0]; tailPts[n * 3 + 1] = _tailP[1]; tailPts[n * 3 + 2] = _tailP[2];
         n++;
       }
-      tailAbs.visible = true;
-      writeTailLine(tailAbs, 0, n, t, recent, null);
+      tailAbs.visible = tailAbs.material.opacity > 0.01;
+      if (tailAbs.visible) writeTailLine(tailAbs, 0, n, t, recent, null);
     } else {
       tailAbs.visible = false;
     }
@@ -2023,7 +2065,7 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
   let lastShadowT = -1;          // 阴影贴图重绘节流：时刻变化 / 相机移动 / 强制时重绘
   let forceShadowRefresh = true; // 切换真实光照 / 首帧强制刷新
   const lastShadowLightPos = new THREE.Vector3(1e12, 0, 0); // 上次重绘时的光源位置（相机相对系）
-  const soiState = { name: null, k: 0, moon: null, k2: 0 };
+  const soiState = { name: null, k: 0, moon: null, k2: 0, win: null };
   // 复用的模块级临时对象（避免每帧分配触发 GC 抖动）
   const _camQInv = new THREE.Quaternion();
   const _sd = new THREE.Vector3();
@@ -2989,6 +3031,45 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     soiState.k = bestK;
     soiState.moon = bestMK > 0.02 ? bestMoon : null;
     soiState.k2 = bestMK;
+
+    /* —— 活动行星窗口：日心轨迹让位（时间域裁剪）——
+     * 相对轨迹（行星锚定）与日心轨迹是两个参考系，仅在实际位置处相交。旧实现
+     * 两者叠加显示（日心仅降 45% 亮度），在发射逃逸这类【长窗口】（地球窗口
+     * 58.5 h）中，行星自窗口起点起的运动使相对轨迹相对日心轨迹剪切偏移达
+     * 数千 km 且随回放增长——两条「已飞轨迹」在飞船处以大角相交并各自伸向
+     * 不同方向，加上未来段的同样分歧，放大后即用户反馈的 launch 附近折线。
+     * 修复：窗口激活（t 在窗口时间域内且 k>0）时，日心轨迹的已飞段裁剪到
+     * 窗口起点 i0、未来段自窗口终点 i1+1 起画，窗口时间域内由相对轨迹
+     * （窗口线 + 动态尾迹，同一剪切系、连续）独家呈现——与 NASA Eyes 的
+     * 「进入 SOI 后显示相对轨迹」语义一致。窗口外日心轨迹照常。 */
+    let actWin = null;
+    if (showRel && bestName && bestK > 0.001) {
+      const spBest = soiPlanets.get(bestName);
+      actWin = spBest ? soiWindowAt(spBest, t) : null;
+    }
+    soiState.win = actWin || null;
+    if (actWin && actWin.i0 !== undefined) {
+      const i0 = actWin.i0;
+      const i1 = Math.min(actWin.i0 + actWin.n - 1, trailN - 1);
+      // reveal：深入 SOI（k→1）时窗口时间域内的日心轨迹完全让位；临出 SOI
+      // （k→0，相对轨迹随之淡出）时按比例回补，避免轨迹先消失再突现。
+      const reveal = THREE.MathUtils.clamp((1 - bestK) / 0.4, 0, 1);
+      const startIdx = trailOptions.mode === 'recent' ? lowerBound(trailT, t - RECENT_SPAN) : 0;
+      const flownEnd = Math.round(i0 + (tailIdxTail - i0) * reveal);
+      const flownCount = Math.max(0, flownEnd + 1 - startIdx);
+      trailFlownLine.visible = trailFlownLine.visible && flownCount >= 2;
+      if (trailFlownLine.visible) {
+        trailFlownLine.geometry.setDrawRange(startIdx, Math.min(flownCount, tailIdxTail + 1 - startIdx));
+      }
+      const futBase = Math.min(i1 + 1, trailN);
+      const futStart = Math.max(idxNow + 1, Math.round(futBase - (futBase - (idxNow + 1)) * reveal));
+      trailFullLine.visible = trailFullLine.visible && futStart < trailN - 1;
+      if (trailFullLine.visible) {
+        trailFullLine.geometry.setDrawRange(futStart, trailN - futStart);
+      }
+      // 日心尾迹在窗口内按 (1−k) 淡出、相对尾迹按 k 淡入——交叉过渡无突跳
+      tailAbs.material.opacity *= (1 - bestK);
+    }
   }
 
   function render() {

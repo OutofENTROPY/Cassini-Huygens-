@@ -185,7 +185,13 @@ console.log('\n[4] SOI 窗口计数与不重叠');
 // earth=2：发射逃逸段（1997-10-15 穿出）+ 1999-08-18 飞掠。
 // 历史 bug：逃逸段曾被 SOI 扫描器与显式补建各生成一次 → 出现两个几乎重合的窗口。
 // 前端 soiWindowAt 只选其一绘制，但白建一份顶点缓冲；现于烘焙端与补丁端去重。
-const soi = sc.soi, expect = { venus: 2, earth: 2, jupiter: 1, saturn: 1, titan: 12 };
+// 2026-10-04 框架修复：scan_moon_soi_windows 曾用赤道 state() 混黄道月网格求距
+// （误差 ~0.5e6 km）→ 窗口全是幽灵交会（titan×12，真实飞掠全部漏报）；修复后
+// titan 126 / enceladus 12 / rhea 4 / dione 5 / iapetus 1 为真实 SOI 穿越。
+const soi = sc.soi, expect = {
+  venus: 2, earth: 2, jupiter: 1, saturn: 1,
+  titan: 126, enceladus: 12, rhea: 4, dione: 5, iapetus: 1,
+};
 for (const k of Object.keys(expect)) {
   const n = (soi[k] || []).length;
   ok(n === expect[k], `SOI ${k} == ${expect[k]}`, `实得 ${n}`);

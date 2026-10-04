@@ -1046,12 +1046,16 @@ def scan_moon_soi_windows(ts, te, moons_raw):
     tsamp = ts + step * np.arange(n)
     cass = np.empty((n, 3))
     for i, u in enumerate(tsamp):
-        st = state("CASSINI", "SATURN BARYCENTER", float(u))
-        cass[i] = np.array(st[:3]) - SB.offset(float(u))     # 相对体中心
+        # 必须先转黄道再减 SB.offset（state() 返回 ICRF 赤道系；SB.offset/月网格
+        # 均为黄道系。曾直接用 state() 赤道坐标与黄道月网格求距 —— 框架混算
+        # 误差 ~|r|·2sin(ε/2) ≈ 0.5e6 km，扫出的"窗口"全是幽灵交会，
+        # Ta/Huygens/2005 全部真实 Titan 飞掠漏报。
+        cass[i] = np.array(state_pos_ecl("CASSINI", "SATURN BARYCENTER", float(u))) \
+            - SB.offset(float(u))                            # 相对体中心（黄道）
 
     def _cass_rel(u):
-        st = state("CASSINI", "SATURN BARYCENTER", float(u))
-        return np.array(st[:3]) - SB.offset(float(u))
+        return np.array(state_pos_ecl("CASSINI", "SATURN BARYCENTER", float(u))) \
+            - SB.offset(float(u))
 
     for m in SAT_MOONS:
         raw = moons_raw[m]
@@ -1106,6 +1110,32 @@ def scan_planet_soi(spans, name, r_soi):
                     best[1] = max(best[1], u)
     if best is None:
         return None
+    # 候选域边界外扩：coarse_soi_spans 用 1d 网格，快飞掠（如 1999 地球 v∞≈16 km/s，
+    # 入 SOI 仅 ~1.3 d）可能只在域内采到 1-2 个在 SOI 内的样本，真实入 SOI 时刻
+    # 落在候选域之外 → 窗口被截掉近掠半程（曾致 earth-1999 窗口起点晚于近拱 5 h）。
+    # 以 1800s 步向外走直到离开 SOI（±10 d 防御性钳制）；SPK 域外（发射/末尾）停走。
+    lim = 10 * 86400.0
+
+    def d_of(u):
+        try:
+            return float(np.linalg.norm(cassini_rel_planet(name, float(u))))
+        except Exception:
+            return None
+
+    u = best[0]
+    while u > best[0] - lim:
+        d = d_of(u - 1800.0)
+        if d is None or d >= r_soi:
+            break
+        u -= 1800.0
+    best[0] = u
+    u = best[1]
+    while u < best[1] + lim:
+        d = d_of(u + 1800.0)
+        if d is None or d >= r_soi:
+            break
+        u += 1800.0
+    best[1] = u
     return (best[0] - 900.0, best[1] + 900.0)
 
 

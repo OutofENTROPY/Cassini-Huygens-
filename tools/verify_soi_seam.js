@@ -21,8 +21,7 @@ const CASES = [
   ['1999-08-18T03:28:00Z', 'earth',   2.0e6, 'earth'],
   ['2000-12-30T10:05:00Z', 'jupiter', 1.0e7, 'jupiter'],
   ['2004-07-01T01:00:00Z', 'saturn',  5.0e5, 'saturn'],
-  ['2005-01-14T10:00:00Z', 'titan',   3.0e5, 'titan'],
-  ['2010-05-19T00:00:00Z', 'titan',   3.0e5, 'titan'],
+  ['2004-10-26T15:30:00Z', 'titan',   3.0e5, 'titan'],   // Ta 飞掠（真实 SOI 窗口）
   ['2017-04-26T00:00:00Z', 'saturn',  1.0e5, 'saturn'],
 ];
 
@@ -59,14 +58,15 @@ const CASES = [
       const c=S.camWorld;
       const worldAt=(line,i)=>{const g=i*3;const o=line.position;
         return [c.x+o.x+buf[g], c.y+o.y+buf[g+1], c.z+o.z+buf[g+2]];};
-      // 判据1：窗口 flown 末顶点 vs tailPlanet 末顶点（尾迹覆盖衔接段，末点=当前时刻）
-      const tail=S.tailPlanet;
+      // 判据1：窗口 flown 末顶点 vs 所属层级尾迹首顶点（行星窗→tailPlanet，
+      // 卫星窗→tailMoon；两者都锚定锚定体当前位置，语义逐位一致）
+      const tail = e.parent ? S.tailMoon : S.tailPlanet;
       const tdr=tail.geometry.drawRange;
       const tArr=tail.geometry.attributes.position.array;
-      const tailEnd=(()=>{const i=tdr.start+tdr.count-1;const g=i*3;const o=tail.position;
+      const tailFirst=(()=>{const i=tdr.start;const g=i*3;const o=tail.position;
         return [c.x+o.x+tArr[g], c.y+o.y+tArr[g+1], c.z+o.z+tArr[g+2]];})();
       const flownLast=worldAt(w.flown, dr.start+dr.count-1);
-      const sA=S.screenPosOf(flownLast), sB=S.screenPosOf(tailEnd);
+      const sA=S.screenPosOf(flownLast), sB=S.screenPosOf(tailFirst);
       const seamPx=Math.hypot(sA.x-sB.x, sA.y-sB.y);
       // 判据2：飞船贴合（窗口内最近顶点 vs cassiniPosAt(t)）
       const idxNow=S.trailIndexAt(t);
