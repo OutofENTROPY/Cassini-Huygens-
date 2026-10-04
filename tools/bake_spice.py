@@ -545,6 +545,156 @@ def prep_track(packed):
     }
 
 
+# ---------- 卫星密切根数 + 轨道线（前端 planetOrbits 轨道线数据源） ----------
+# 前端 scene.js 的轨道线渲染需要每颗卫星附带：
+#   'o'     首帧根数整圈 256 点折线（母星中心【黄道系】f32 base64，加载时
+#           直接 eclToThree，不再做根数重建）
+#   'elems' {eT f64 base64, eV f32 base64, n}：eV 每帧 8 个
+#           (a, e, n[rad/s], M0, qw, qx, qy, qz)——四元数为【ICRF 赤道系】
+#           主动旋转 q v q*（v = 轨道面坐标 (px, py, 0)），前端 elemPosEcl
+#           求值后再统一转黄道（OBL_E）。与旧 bake_data.py / dynamo 管线
+#           逐值同约定（orb_pos 的 9 元组 p[5..8] = (w,x,y,z)）。
+# bake_moons 若只产 segs，重烘焙后全部卫星/月球轨道线消失（根因）。
+
+def _kepler_e(M, e):
+    """椭圆开普勒方程 E − e·sinE = M（e<1），Newton 迭代。"""
+    M = (M + math.pi) % (2.0 * math.pi)
+    if M < 0.0:
+        M += 2.0 * math.pi
+    M -= math.pi
+    E = M
+    for _ in range(40):
+        f = E - e * math.sin(E) - M
+        E -= f / (1.0 - e * math.cos(E))
+        if abs(f) < 1e-12:
+            break
+    return E
+
+
+def osculating_elements(target, observer, u, mu, center_fix=None):
+    """t=u（app 秒）相对密切根数（ICRF 赤道系）。
+    center_fix(u) → (dx,dy,dz, dvx,dvy,dvz)：J2000 体中心修正（土卫 =
+    SATURN BARYCENTER − 质量加权卫星偏移，与 SB.offset 同源；月球观测者
+    EARTH 本身即体中心，无需修正）。返回 (a, e, n_rad, M0, qw, qx, qy, qz)。"""
+    x, y, z, vx, vy, vz = state(target, observer, u)
+    if center_fix is not None:
+        dx, dy, dz, dvx, dvy, dvz = center_fix(u)
+        x -= dx; y -= dy; z -= dz
+        vx -= dvx; vy -= dvy; vz -= dvz
+    r = math.sqrt(x * x + y * y + z * z)
+    v2 = vx * vx + vy * vy + vz * vz
+    hx = y * vz - z * vy; hy = z * vx - x * vz; hz = x * vy - y * vx
+    h2 = hx * hx + hy * hy + hz * hz
+    a = 1.0 / (2.0 / r - v2 / mu)
+    # 偏心率矢量 e⃗ = (v⃗×h⃗)/μ − r̂
+    ex = (vy * hz - vz * hy) / mu - x / r
+    ey = (vz * hx - vx * hz) / mu - y / r
+    ez = (vx * hy - vy * hx) / mu - z / r
+    e = math.sqrt(ex * ex + ey * ey + ez * ez)
+    Wx, Wy, Wz = hx / math.sqrt(h2), hy / math.sqrt(h2), hz / math.sqrt(h2)
+    if e > 1e-9:
+        Px, Py, Pz = ex / e, ey / e, ez / e
+    else:
+        # 圆轨极限：近拱点方向无定义 → 取当前径向，仅保 (P,Q,W) 正交右手
+        Px, Py, Pz = x / r, y / r, z / r
+        Qx = Wy * Pz - Wz * Py; Qy = Wz * Px - Wx * Pz; Qz = Wx * Py - Wy * Px
+        Px = Qy * Wz - Qz * Wy; Py = Qz * Wx - Qx * Wz; Pz = Qx * Wy - Qy * Wx
+    Qx = Wy * Pz - Wz * Py; Qy = Wz * Px - Wx * Pz; Qz = Wx * Py - Wy * Px
+    cos_nu = (x * Px + y * Py + z * Pz) / r
+    sin_nu = (x * Qx + y * Qy + z * Qz) / r
+    E = math.atan2(math.sqrt(max(0.0, 1.0 - e * e)) * sin_nu, e + cos_nu)
+    M = E - e * math.sin(E)
+    n_rad = math.sqrt(mu / (a * a * a))
+    # 旋转矩阵列 = [P̂ Q̂ Ŵ]（轨道面 → 赤道，主动）→ 四元数 (w,x,y,z)
+    m00, m01, m02 = Px, Qx, Wx
+    m10, m11, m12 = Py, Qy, Wy
+    m20, m21, m22 = Pz, Qz, Wz
+    tr = m00 + m11 + m22
+    if tr > 0.0:
+        s = math.sqrt(tr + 1.0) * 2.0
+        qw, qx, qy, qz = 0.25 * s, (m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s
+    elif m00 > m11 and m00 > m22:
+        s = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+        qw, qx, qy, qz = (m21 - m12) / s, 0.25 * s, (m01 + m10) / s, (m02 + m20) / s
+    elif m11 > m22:
+        s = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+        qw, qx, qy, qz = (m02 - m20) / s, (m01 + m10) / s, 0.25 * s, (m12 + m21) / s
+    else:
+        s = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+        qw, qx, qy, qz = (m10 - m01) / s, (m02 + m20) / s, (m12 + m21) / s, 0.25 * s
+    return (a, e, n_rad, M, qw, qx, qy, qz)
+
+
+def _saturn_center_fix():
+    """土星体中心 − 系统质心的 J2000 偏移（含速度，中心差分）。
+    与 SB.offset 同物理（质量加权卫星偏移反号），但直接逐点求值且在赤道系
+    ——供 osculating_elements 把 SATURN BARYCENTER 观测改到体中心。"""
+    gm_p = SB.gm_planet
+    names = list(SB.gm_moons)
+    gms = [SB.gm_moons[m] for m in names]
+    inv = -1.0 / gm_p
+
+    def off(u):
+        et = TM.et(u)
+        ox = oy = oz = 0.0
+        for k in range(len(names)):
+            x, y, z, _, _, _ = _state_fast(names[k], "SATURN BARYCENTER", et)
+            g = gms[k]
+            ox += g * x; oy += g * y; oz += g * z
+        return ox * inv, oy * inv, oz * inv
+
+    def fix(u):
+        dt = 600.0
+        ax, ay, az = off(u - dt)
+        bx, by, bz = off(u + dt)
+        cx, cy, cz = off(u)
+        return (cx, cy, cz,
+                (bx - ax) / (2.0 * dt), (by - ay) / (2.0 * dt), (bz - az) / (2.0 * dt))
+    return fix
+
+
+def _orbit_line_b64(el):
+    """首帧根数整圈 256 点折线 → 黄道系 f32 base64（'o' 字段）。"""
+    a, e, n_rad, M0, qw, qx, qy, qz = el
+    b = a * math.sqrt(max(0.0, 1.0 - e * e))
+    pts = []
+    for i in range(256):
+        E = _kepler_e(M0 + 2.0 * math.pi * i / 256.0, e)
+        px = a * (math.cos(E) - e)
+        py = b * math.sin(E)
+        # 前端/旧管线同式：t⃗ = 2 q⃗×v⃗，v' = v + qw·t⃗ + q⃗×t⃗
+        tx = -2.0 * qz * py
+        ty = 2.0 * qz * px
+        tz = 2.0 * (qx * py - qy * px)
+        vx = px + qw * tx + (qy * tz - qz * ty)
+        vy = py + qw * ty + (qz * tx - qx * tz)
+        vz = qw * tz + (qx * ty - qy * tx)
+        pts.append((vx, vy * CE + vz * SE, -vy * SE + vz * CE))   # eq→ecl
+    flat = [c for p in pts for c in p]
+    return base64.b64encode(struct.pack(f"<{len(flat)}f", *flat)).decode("ascii")
+
+
+def moon_elems_and_line(target, observer, mu, t0, t1, cap=1200, center_fix=None):
+    """密切根数关键帧（≤cap 帧均匀采样）+ 'o' 轨道线。返回 (o_b64, elems)。"""
+    n = max(2, cap)
+    eT, eV = [], []
+    first = None
+    for i in range(n):
+        u = t0 + (t1 - t0) * i / (n - 1)
+        el = osculating_elements(target, observer, float(u), mu, center_fix)
+        if first is None:
+            first = el
+        eT.append(float(u))
+        # eV 帧序 = (a, e, n, M0, qw, qx, qy, qz)，与前端 eV[o+4]=qw 对齐
+        eV.extend(el)
+    elems = {
+        "eT": base64.b64encode(struct.pack(f"<{len(eT)}d", *eT)).decode("ascii"),
+        "eV": base64.b64encode(struct.pack(f"<{len(eV)}f", *eV)).decode("ascii"),
+        "n": len(eT),
+    }
+    return _orbit_line_b64(first), elems
+
+
 # ---------- 卫星网格烘焙（母星体中心相对，f32 网格 + CR） ----------
 
 MOON_STEPS = {
@@ -560,6 +710,7 @@ def cr_error_scale(name):
 def bake_moons(t0u, t1u):
     moons = {}
     raw = {}
+    fix = _saturn_center_fix()
     for m in SAT_MOONS:
         step = MOON_STEPS[m]
         n = int(round((t1u - t0u) / step)) + 1
@@ -574,9 +725,13 @@ def bake_moons(t0u, t1u):
             pts[i, 2] = r[2] - o[2]
         pts32 = np.asarray(pts, dtype=np.float32)
         raw[m] = (t0u, step, pts32)
+        mu = SB.gm_planet + (SB.gm_moons.get(m) or 0.0)
+        o_b64, elems = moon_elems_and_line(
+            m, "SATURN BARYCENTER", mu, t0u, t1u, cap=1200, center_fix=fix)
         moons[m] = {"radiusKm": RADII[m], "segs": pack([(t0u, step, pts32)]),
+                    "o": o_b64, "elems": elems,
                     "parent": "saturn", "interp": "cr"}
-        print(f"moon {m}: {n} pts @ {step:.0f}s")
+        print(f"moon {m}: {n} pts @ {step:.0f}s, elems {elems['n']} 帧")
     # 月球（地心）
     m = "moon"
     step = MOON_STEPS[m]
@@ -587,9 +742,12 @@ def bake_moons(t0u, t1u):
         pts[i] = pos_ecl("MOON", "EARTH", float(u))
     pts32 = np.asarray(pts, dtype=np.float32)
     raw[m] = (t0u, step, pts32)
+    mu = (gm("EARTH") or 398600.435436) + (gm("MOON") or 4902.800066)
+    o_b64, elems = moon_elems_and_line("MOON", "EARTH", mu, t0u, t1u, cap=1200)
     moons[m] = {"radiusKm": RADII[m], "segs": pack([(t0u, step, pts32)]),
+                "o": o_b64, "elems": elems,
                 "parent": "earth", "interp": "cr"}
-    print(f"moon {m}: {n} pts @ {step:.0f}s")
+    print(f"moon {m}: {n} pts @ {step:.0f}s, elems {elems['n']} 帧")
     return moons, raw
 
 
