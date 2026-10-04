@@ -659,10 +659,10 @@ body.event-open:not(.event-folded) #event-fab {
   flex: 1; height: 9px; border-radius: 5px; overflow: hidden;
   background: rgba(92, 157, 255, .10);
   display: flex;                       /* 分段槽并排（仅主条），宽度 = 字节占比 */
+  gap: 2px;                            /* 段间 2px 间隙（宽度已在 JS 侧扣除） */
 }
-.load-bar.thin { height: 5px; border-radius: 3px; flex: 1; }
-.load-seg { height: 100%; flex: 0 0 auto; padding-right: 1px; }   /* 1px 段间缝 */
-.load-seg:last-child { padding-right: 0; }
+.load-bar.thin { flex: 1; }
+.load-seg { height: 100%; flex: 0 0 auto; }   /* 段宽由 loader 按占比生成，无缝拼接 */
 .load-fill {
   width: 100%; height: 100%; border-radius: inherit;
   transform: scaleX(0); transform-origin: left center;
@@ -673,10 +673,23 @@ body.event-open:not(.event-folded) #event-fab {
 .load-stage { font-size: 11px; color: var(--text-dim); opacity: .75; text-align: center; margin-top: -6px; }
 .load-lbl { font-size: 11px; color: var(--text-dim); width: 52px; flex: 0 0 auto; }
 .load-subpct { font-size: 11px; color: var(--text-dim); min-width: 44px; text-align: left; font-variant-numeric: tabular-nums; }
+/* 并行细条统一白色；完成时 .lit 辉光提亮 */
+#loadbar-tex-fill, #loadbar-model-fill { background: #e9f1ff; }
+.load-fill.lit { filter: brightness(1.25); box-shadow: 0 0 9px rgba(233, 241, 255, .8); }
 #loading-text {
-  font-size: 12px; font-weight: 600; color: var(--text-dim);
-  letter-spacing: 5px; text-indent: 5px;   /* 抵消末字母字距，保持光学居中 */
+  font-size: 30px; font-weight: 700; color: var(--text-dim);
+  letter-spacing: 13px; text-indent: 13px;   /* 抵消末字母字距，保持光学居中 */
   text-transform: uppercase;
+}
+/* 逐字母 opacity 脉冲，delay 随 --i 递增 → 亮波从左向右扫过。
+   opacity 走合成器：主线程被大脚本 eval 占满时动画照常（不卡顿） */
+#loading-text span {
+  animation: letter-pulse 1.3s ease-in-out infinite;
+  animation-delay: calc(var(--i) * 110ms);
+}
+@keyframes letter-pulse {
+  0%, 100% { opacity: .3; }
+  40%      { opacity: 1; }
 }
 
 /* 3D 标签容器 */

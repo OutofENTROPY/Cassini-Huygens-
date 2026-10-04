@@ -1,7 +1,7 @@
 /* loader.js — 启动加载器：接管全部脚本装载并驱动三条实时进度条
  *
  * 主条（串行链，分段堆叠，颜色 = 资源组）：下载/eval → 场景构建
- *   蓝 = 框架 + 业务脚本 · 青 = 贴图/星表数据 · 橙 = 轨道数据 · 紫 = 模型数据 · 灰 = 场景构建
+ *   橙 = 框架 + 业务脚本 · 青 = 贴图/星表数据 · 蓝 = 轨道数据 · 紫 = 模型数据 · 灰 = 场景构建
  * 细条 ×2（并行链，scene.init 发起后推进）：纹理解码 n/21 · GLB 模型解析
  *
  * 在线版：XHR 3 路并发下载真实字节进度，按 manifest 顺序经间接 eval 执行
@@ -55,13 +55,13 @@
 
   /* ---------- 资源组（主条分段，槽宽 = 字节真实占比；场景构建固定小槽） ---------- */
   var GROUPS = {
-    lib:   { label: '下载框架脚本', color: '#5c9dff' },
+    lib:   { label: '下载框架脚本', color: '#f0a13c' },   // 橙（原蓝，色相与轨道组互换）
     tex:   { label: '下载贴图数据', color: '#35c99a' },
-    orbit: { label: '下载轨道数据', color: '#f0a13c' },
+    orbit: { label: '下载轨道数据', color: '#5c9dff' },   // 蓝（原橙）
     model: { label: '下载模型数据', color: '#b07ef0' },
     scene: { label: '构建场景',     color: '#8fa3bf' },
   };
-  var ORDER = ['lib', 'tex', 'orbit', 'model', 'scene'];
+  var ORDER = ['lib', 'tex', 'orbit', 'model', 'scene'];   // 段序不变；橙蓝色相互换（用户反馈）
   var totalBytes = 0;
   MANIFEST.forEach(function (f) { totalBytes += f[2]; });
   var SCENE_SLOT = 0.05;                       // 场景构建固定占 5%
@@ -75,11 +75,20 @@
     if (k === 'scene') { g.slot = SCENE_SLOT; return; }
     MANIFEST.forEach(function (f) { if (f[1] === k) { g.files.push(f); g.bytes += f[2]; } });
   });
-  // 先给四个下载组按字节分配 95%，再归一（避免浮点下溢/超出）
-  var dlTotal = totalBytes;
+  // 槽宽分配：场景构建固定 5%；下载组按字节占比分剩余 95%，但设下限——
+  // 框架脚本组仅 ~1.2%，不设下限则蓝段窄到不可见（用户反馈 #2）
+  var MIN_SLOT = 0.04;
+  var dlGroups = ['lib', 'tex', 'orbit', 'model'];
+  var shares = {}, flexSum = 0, floorSum = 0;
+  dlGroups.forEach(function (k) {
+    var s = GROUPS[k].bytes / totalBytes;
+    shares[k] = s;
+    if (s < MIN_SLOT) floorSum += MIN_SLOT; else flexSum += s;
+  });
+  var flexAvail = 1 - SCENE_SLOT - floorSum;
   var acc = 0;
-  ['lib', 'tex', 'orbit', 'model'].forEach(function (k, i, arr) {
-    var w = GROUPS[k].bytes / dlTotal * (1 - SCENE_SLOT);
+  dlGroups.forEach(function (k, i, arr) {
+    var w = shares[k] < MIN_SLOT ? MIN_SLOT : shares[k] / flexSum * flexAvail;
     GROUPS[k].slot = w;
     acc += w;
     if (i === arr.length - 1) GROUPS[k].slot += (1 - SCENE_SLOT) - acc; // 尾组吸收舍入
@@ -100,7 +109,9 @@
   ORDER.forEach(function (k) {
     var seg = document.createElement('div');
     seg.className = 'load-seg';
-    seg.style.width = (GROUPS[k].slot * 100).toFixed(2) + '%';
+    // 段间 2px 间隙由 CSS gap 提供；每段扣除 1.6px（5 段共 8px = 4 道间隙），
+    // 总宽恰好铺满且不溢出（此前 padding 方案曾把末段挤出裁剪区）
+    seg.style.width = 'calc(' + (GROUPS[k].slot * 100).toFixed(2) + '% - 1.6px)';
     var fill = document.createElement('div');
     fill.className = 'load-fill';
     fill.style.background = GROUPS[k].color;
@@ -141,6 +152,15 @@
     pctEl.textContent = overallPct + '%';
   }
   function setStage(text) { stageEl.textContent = text; }
+  /* 阶段文字稳定策略：显示 ORDER 中第一个未完成的下载组——3 路并发下载时
+   * 各组字节交错到达，若跟随事件源文字会高频跳变（用户反馈 #5）；
+   * 只在某个组整体完成时切换一次 */
+  function updateStage() {
+    if (dlDone) return;
+    for (var i = 0; i < ORDER.length && ORDER[i] !== 'scene'; i++) {
+      if (GROUPS[ORDER[i]].real < 1) { setStage(GROUPS[ORDER[i]].label); return; }
+    }
+  }
 
   /* ---------- 并行细条状态 ---------- */
   var texInitiated = {}, texDone = {}, texTotal = 0;
@@ -150,6 +170,7 @@
     texFillEl.style.transitionDuration = '300ms';
     texFillEl.style.transform = 'scaleX(' + (n / texTotal).toFixed(4) + ')';
     texPctEl.textContent = n + '/' + texTotal;
+    texFillEl.classList.toggle('lit', n >= texTotal);   // 完成提亮（用户反馈 #4）
     check();
   }
   var modelFrac = 0;
@@ -158,6 +179,7 @@
     modelFillEl.style.transform = 'scaleX(' + modelFrac.toFixed(4) + ')';
     modelPctEl.textContent = modelFrac >= 1 ? '完成' :
       (modelFrac > 0 ? '解析中' : '等待中');
+    modelFillEl.classList.toggle('lit', modelFrac >= 1);
     check();
   }
 
@@ -194,7 +216,7 @@
     g.loaded += Math.max(0, capped - bytesSeen[i]);
     bytesSeen[i] = capped;
     setReal(f[1], g.loaded / g.bytes, 250);
-    setStage(g.label);
+    updateStage();
   }
 
   function execCode(code) { (0, eval)(code); }
@@ -288,7 +310,7 @@
         var g = GROUPS[f[1]];
         g.loaded += f[2];
         setReal(f[1], g.loaded / g.bytes, 250);
-        setStage(g.label);
+        updateStage();
         i++;
         step();
       };
@@ -312,6 +334,7 @@
     texTotal = 0; for (var k in texInitiated) texTotal++;
     refreshTex();
     setReal('scene', 1, 200);
+    setStage('解析资源');   // 并行细条收尾阶段；check() 完成时改为「完成」
     check();
   };
   api.modelStep = function (frac) {

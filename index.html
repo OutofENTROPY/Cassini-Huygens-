@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Cassini–Huygens 历史飞行数据 · 3D 轨迹可视化 (1997–2017)</title>
-<link rel="stylesheet" href="css/style.css?v=2026103">
+<link rel="stylesheet" href="css/style.css?v=2026422">
 </head>
 <body>
 <div id="app">
@@ -182,7 +182,9 @@
          纹理解码、GLB 模型解析。分段 fill 走 transform 合成器动画，启动期
          主线程被大体积数据脚本占满时依然平滑（loader 控制爬行与校正）。
          分段 div 由 loader.js 按资源组动态生成 -->
-    <div id="loading-text">LOADING</div>
+    <!-- LOADING 逐字母错峰脉冲：opacity 是合成器动画，主线程被数据脚本
+         eval 占满时依然流畅（background-position 流光会冻结，已弃用） -->
+    <div id="loading-text" aria-label="LOADING"><span style="--i:0">L</span><span style="--i:1">O</span><span style="--i:2">A</span><span style="--i:3">D</span><span style="--i:4">I</span><span style="--i:5">N</span><span style="--i:6">G</span></div>
     <div id="loadbars">
       <div class="load-row main">
         <div class="load-bar" id="loadbar-main"></div>
@@ -203,6 +205,6 @@
   </div>
 </div>
 
-<script src="js/loader.js?v=2026416"></script>
+<script src="js/loader.js?v=2026424"></script>
 </body>
 </html>
