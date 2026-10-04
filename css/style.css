@@ -1,40 +1,43 @@
-/* style.css — 卡西尼 3D 轨迹可视化 · miuix (HyperOS 流体设计) 风格
-   设计语言：深色毛玻璃卡片 / 大圆角胶囊控件 / HyperOS 蓝主色 + 卡西尼橙辅色 */
+/* style.css — 卡西尼 3D 轨迹可视化 · miuix (HyperOS) 深色主题
+   设计令牌对齐 miuix dark palette：
+   · 主色 HyperOS 蓝 #3482FF（激活 / 进度 / 强调），辅色卡西尼橙（事件 / 播放态 / 速率）
+   · 表面 = 深色中性玻璃（近黑半透明 + 背景模糊），星野上保持稳定对比
+   · 圆角体系小中大 + 胶囊，扁平低辉光，MiSans 字阶 */
 :root {
-  --bg: #05070d;
+  --bg: #000000;
 
-  /* miuix 表面色：灰色混色毛玻璃——中性灰替代透明白/深蓝黑，
-     提高不透明度让星野上的文字对比稳定可读 */
-  --glass: rgba(146, 151, 160, 0.28);
-  --glass-hover: rgba(160, 165, 174, 0.36);
-  --glass-active: rgba(176, 181, 190, 0.44);
-  --panel: rgba(52, 56, 65, 0.70);
-  --panel-strong: rgba(46, 50, 59, 0.80);
+  /* miuix 深色表面：控件用中性透灰玻璃，卡片用近黑深玻璃（比控件更实、更暗一档） */
+  --glass: rgba(120, 120, 128, 0.24);
+  --glass-hover: rgba(132, 132, 140, 0.32);
+  --glass-active: rgba(148, 148, 156, 0.38);
+  --panel: rgba(28, 28, 32, 0.76);
+  --panel-strong: rgba(24, 24, 28, 0.86);
 
-  --stroke: rgba(255, 255, 255, 0.09);
+  --stroke: rgba(255, 255, 255, 0.10);
   --stroke-strong: rgba(255, 255, 255, 0.18);
 
-  /* HyperOS 主色（蓝）与卡西尼辅色（暖橙：时间条 / 事件 / 播放态） */
-  --primary: #5c9dff;
-  --primary-soft: rgba(92, 157, 255, 0.32);
+  /* miuix 主色 HyperOS 蓝；卡西尼橙保留为任务辅色（时间条事件 / 播放态 / 速率） */
+  --primary: #3482ff;
+  --primary-soft: rgba(52, 130, 255, 0.30);
+  --primary-bright: #5b9aff;
   --accent2: #ffa259;
   --accent2-soft: #e8b48c;
 
-  --text: #f2f4f8;
-  --text-2: #b9bfca;
-  --text-dim: #9aa1ad;
+  --text: #f4f5f7;
+  --text-2: rgba(244, 245, 247, 0.66);
+  --text-dim: rgba(244, 245, 247, 0.44);
 
   /* miuix 圆角体系：小=卡片内元素，中=悬浮卡，大=弹窗，full=胶囊 */
   --r-sm: 12px;
-  --r-md: 18px;
-  --r-lg: 24px;
+  --r-md: 20px;
+  --r-lg: 26px;
   --r-full: 999px;
 
-  --blur-btn: saturate(1.5) blur(20px);
+  --blur-btn: saturate(1.6) blur(20px);
   --blur-panel: saturate(1.7) blur(32px);
 
-  --shadow-1: 0 2px 10px rgba(0, 0, 0, 0.28);
-  --shadow-2: 0 12px 44px rgba(0, 0, 0, 0.45);
+  --shadow-1: 0 2px 10px rgba(0, 0, 0, 0.30);
+  --shadow-2: 0 14px 48px rgba(0, 0, 0, 0.50);
   --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
   --spring: cubic-bezier(0.34, 1.35, 0.64, 1);
 }
@@ -65,7 +68,7 @@ body { touch-action: manipulation; }
   position: absolute; top: 0; left: 0; right: 0;
   display: flex; align-items: center;
   padding: 14px 18px;
-  background: linear-gradient(to bottom, rgba(5,7,13,0.80), rgba(5,7,13,0));
+  background: linear-gradient(to bottom, rgba(0,0,0,0.78), rgba(0,0,0,0));
   z-index: 10;
   pointer-events: none;
 }
@@ -91,8 +94,8 @@ body { touch-action: manipulation; }
 .view-btn:hover { color: var(--text); background: var(--glass-hover); }
 .view-btn:active { transform: scale(0.96); }
 .view-btn.active {
-  background: var(--glass-active); color: var(--text);
-  border-color: var(--stroke-strong);
+  background: var(--primary-soft); color: var(--primary-bright);
+  border-color: rgba(52, 130, 255, 0.40);
 }
 .vb-divider {
   width: 1px; height: 22px; margin: 0 4px;
@@ -110,7 +113,9 @@ body { touch-action: manipulation; }
   border: none; border-radius: 0; padding: 8px 13px;
   background: transparent; box-shadow: none;
 }
-#trail-history .view-btn.active { background: var(--glass-active); }
+#trail-history .view-btn.active {
+  background: var(--primary-soft); color: var(--primary-bright);
+}
 #trail-history .view-btn + .view-btn { border-left: 1px solid var(--stroke); }
 
 /* 右上角圆形图标按钮（HyperOS 玻璃圆钮） */
@@ -135,9 +140,9 @@ body { touch-action: manipulation; }
 #btn-settings:active,
 #btn-fullscreen:active { transform: scale(0.94); }
 #btn-fullscreen.active {
-  color: var(--primary);
+  color: var(--primary-bright);
   background: var(--primary-soft);
-  border-color: rgba(92, 157, 255, 0.45);
+  border-color: rgba(52, 130, 255, 0.45);
 }
 
 /* 状态折叠按钮 ◉：桌面 / 移动共用（默认显隐由 JS 按端设定：桌面展开、移动端收起） */
@@ -153,9 +158,9 @@ body { touch-action: manipulation; }
 #hud-toggle svg { width: 18px; height: 18px; }
 #hud-toggle:hover { color: var(--text); background: var(--glass-hover); }
 #hud-toggle.active {
-  color: var(--primary);
+  color: var(--primary-bright);
   background: var(--primary-soft);
-  border-color: rgba(92, 157, 255, 0.45);
+  border-color: rgba(52, 130, 255, 0.45);
 }
 
 /* 右上角设置菜单：全局视角 / 真实光照 / 轨迹开关（miuix 深色玻璃卡） */
@@ -188,10 +193,10 @@ body { touch-action: manipulation; }
   gap: 10px; padding: 1px 2px;
   font-size: 12.5px; font-weight: 500; color: var(--text);
 }
-/* HyperOS 拨动开关 */
+/* miuix 拨动开关：HyperOS 椭圆轨道 + 白色圆钮，开启即主色填充 */
 .switch {
   position: relative; flex: none;
-  width: 46px; height: 27px; border-radius: var(--r-full);
+  width: 44px; height: 26px; border-radius: var(--r-full);
   background: rgba(255,255,255,0.14);
   border: 1px solid var(--stroke);
   cursor: pointer;
@@ -199,14 +204,14 @@ body { touch-action: manipulation; }
 }
 .switch::after {
   content: ""; position: absolute; top: 2px; left: 2px;
-  width: 21px; height: 21px; border-radius: 50%;
+  width: 20px; height: 20px; border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 2px 6px rgba(0,0,0,.40);
   transition: transform .35s var(--spring), background .35s var(--ease);
 }
 .switch:hover { background: rgba(255,255,255,0.20); }
 .switch.on { background: var(--primary); border-color: transparent; }
-.switch.on::after { transform: translateX(19px); }
+.switch.on::after { transform: translateX(18px); }
 
 /* ---------- HUD ---------- */
 /* 桌面 / 移动统一：#hud-stack 为左上角纵向按钮列（◉ 折叠钮在最上），
@@ -228,7 +233,7 @@ body { touch-action: manipulation; }
 }
 body.hud-open #hud { display: block; }
 #hud-date {
-  font-size: 17px; font-weight: 600; color: var(--primary);
+  font-size: 17px; font-weight: 600; color: var(--primary-bright);
   letter-spacing: 0.4px; font-variant-numeric: tabular-nums;
 }
 #hud-phase { font-size: 12px; font-weight: 500; color: var(--text); margin-top: 6px; }
@@ -247,7 +252,7 @@ body.hud-open #hud { display: block; }
 }
 #body-info.hidden { display: none; }
 body.hud-open #body-info:not(.hidden) { display: block; }
-#bi-name { font-size: 14px; font-weight: 600; color: var(--primary); letter-spacing: 0.4px; }
+#bi-name { font-size: 14px; font-weight: 600; color: var(--primary-bright); letter-spacing: 0.4px; }
 #bi-rows { margin-top: 8px; }
 #bi-rows .bi-row {
   display: flex; justify-content: space-between; gap: 12px;
@@ -322,13 +327,13 @@ body.event-open.event-folded #event-fab {
 /* 展开状态：主色高亮（与 ◉ 展开态一致），提示卡片当前展开、再点收起 */
 body.event-open:not(.event-folded) #event-fab {
   animation: fab-in .28s var(--spring);
-  color: var(--primary);
+  color: var(--primary-bright);
   background: var(--primary-soft);
-  border-color: rgba(92, 157, 255, 0.45);
+  border-color: rgba(52, 130, 255, 0.45);
 }
 @keyframes fab-breathe {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(92,157,255,.50), var(--shadow-1); }
-  50%      { box-shadow: 0 0 0 9px rgba(92,157,255,0), var(--shadow-1); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52,130,255,.50), var(--shadow-1); }
+  50%      { box-shadow: 0 0 0 9px rgba(52,130,255,0), var(--shadow-1); }
 }
 
 /* ---------- 事件列表 ---------- */
@@ -382,12 +387,12 @@ body.event-open:not(.event-folded) #event-fab {
 #event-list::-webkit-scrollbar { width: 4px; }
 #event-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16); border-radius: var(--r-full); }
 .ev-item {
-  padding: 9px 12px; border-radius: 10px; cursor: pointer;
+  padding: 9px 12px; border-radius: var(--r-sm); cursor: pointer;
   margin-bottom: 4px;
   transition: background-color .3s var(--ease);
 }
 .ev-item:hover { background: rgba(255,255,255,.07); }
-.ev-item.current { background: rgba(255,162,89,.10); }
+.ev-item.current { background: rgba(255,162,89,.12); }
 .ev-item .ev-date {
   font-size: 10.5px; color: var(--text-dim);
   font-variant-numeric: tabular-nums; letter-spacing: 0.5px;
@@ -400,10 +405,12 @@ body.event-open:not(.event-folded) #event-fab {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 12;
   display: flex; flex-direction: column; align-items: center; gap: 7px;
   padding: 10px 18px 14px;
-  background: linear-gradient(to top, rgba(5,7,13,0.90), rgba(5,7,13,0));
+  background: linear-gradient(to top, rgba(0,0,0,0.88), rgba(0,0,0,0));
 }
-/* 播放键行：日期在播放键左、时分秒在播放键右，字号一致；两侧等宽盒子（12ch 恰好容纳较宽的时分秒）保证播放键严格水平居中 */
+/* 播放键行：日期在播放键左、时分秒在播放键右，字号一致；两侧等宽盒子（12ch 恰好容纳较宽的时分秒）保证播放键严格水平居中；
+   整行抬高 4px，与下方速率滑块拉开间距 */
 #play-row {
+  position: relative; top: -4px;
   display: flex; align-items: center; gap: 16px;
 }
 #time-date, #time-hm {
@@ -413,7 +420,7 @@ body.event-open:not(.event-folded) #event-fab {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-#time-date { text-align: right; color: var(--primary); }
+#time-date { text-align: right; color: var(--primary-bright); }
 #time-hm { text-align: left; color: var(--text); }
 
 /* 总时间条：左半为倒退半程 + 右半为快进半程，贯穿屏幕的加粗毛玻璃横条（进度为最底层） */
@@ -428,28 +435,28 @@ body.event-open:not(.event-folded) #event-fab {
   border: 1px solid var(--stroke);
   backdrop-filter: var(--blur-btn); -webkit-backdrop-filter: var(--blur-btn);
 }
-#slider-left { border-radius: 8px 0 0 8px; border-right: none; }
-#slider-right { border-radius: 0 8px 8px 0; border-left: none; }
+#slider-left { border-radius: 7px 0 0 7px; border-right: none; }
+#slider-right { border-radius: 0 7px 7px 0; border-left: none; }
 .slider-fill {
   position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
-  background: linear-gradient(90deg, #9cc4ff, var(--primary));
-  box-shadow: 0 0 12px rgba(92,157,255,.35);
+  background: var(--primary);
+  box-shadow: 0 0 10px rgba(52,130,255,.30);
 }
 /* miuix 实心圆钮：无描边、主色填充，播放态切卡西尼橙；尺寸收紧使圆形边框贴合图标 */
 #play-btn {
   flex: none;
-  width: 40px; height: 40px; border-radius: 50%;
+  width: 28px; height: 28px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center; line-height: 1;
   background: var(--primary); border: none;
   color: #ffffff; cursor: pointer;
   transition: background-color .35s var(--ease), color .35s var(--ease), box-shadow .35s var(--ease), transform .15s var(--ease);
-  box-shadow: 0 4px 16px rgba(92,157,255,.38);
+  box-shadow: 0 4px 16px rgba(52,130,255,.38);
 }
 /* 播放/暂停图标用内联 SVG 几何绘制（三角质心与双竖线组合中心均落在圆心），随 .playing 类切换 */
 #play-btn .ic-pause { display: none; }
 #play-btn.playing .ic-play { display: none; }
 #play-btn.playing .ic-pause { display: block; }
-#play-btn:hover { background: #74acff; }
+#play-btn:hover { background: var(--primary-bright); }
 #play-btn:active { transform: scale(0.94); }
 #play-btn.playing {
   background: var(--accent2);
@@ -461,7 +468,7 @@ body.event-open:not(.event-folded) #event-fab {
   position: absolute; top: 50%; width: 15px; height: 15px; z-index: 4;
   background: #ffffff; border-radius: 50%;
   transform: translate(-50%, -50%);
-  box-shadow: 0 0 10px rgba(255,255,255,.55), 0 1px 4px rgba(0,0,0,.35);
+  box-shadow: 0 0 10px rgba(255,255,255,.45), 0 1px 4px rgba(0,0,0,.35);
   pointer-events: none;
 }
 /* 事件节点：叠加在总时间条上层的一排圆点（进度条为其底层），横向与时间条对位、可点击跳转 */
@@ -481,12 +488,28 @@ body.event-open:not(.event-folded) #event-fab {
 .mark:hover { background: rgba(255,255,255,0.85); border-color: #ffffff; transform: translate(-50%, -50%) scale(1.25); }
 .mark.past { background: rgba(255,255,255,0.80); border-color: rgba(255,255,255,0.90); }
 
-/* 速率控制：播放键行与总时间条之间居中 */
+/* 速率控制：播放键行与总时间条之间居中；滑块两侧为减半/加倍玻璃圆钮 */
 #rate-wrap {
   width: 280px;
   display: flex; flex-direction: column; align-items: center; gap: 4px;
 }
-#rate-slider-wrap { position: relative; width: 100%; }
+#rate-row {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+}
+#rate-down, #rate-up {
+  flex: none;
+  width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--glass); border: 1px solid var(--stroke);
+  color: var(--text-2); cursor: pointer; padding: 0;
+  backdrop-filter: var(--blur-btn); -webkit-backdrop-filter: var(--blur-btn);
+  transition: background-color .3s var(--ease), color .3s var(--ease), transform .15s var(--ease);
+}
+#rate-down svg, #rate-up svg { width: 11px; height: 11px; }
+#rate-down:hover, #rate-up:hover { color: var(--text); background: var(--glass-hover); }
+#rate-down:active, #rate-up:active { transform: scale(0.92); }
+#rate-slider-wrap { position: relative; flex: 1; }
 #rate-slider {
   -webkit-appearance: none; appearance: none;
   display: block;
@@ -510,10 +533,10 @@ body.event-open:not(.event-folded) #event-fab {
 #rate-divider {
   position: absolute; left: 50%; top: -4px; bottom: -4px;
   width: 2px; transform: translateX(-50%);
-  background: rgba(242,244,248,0.50);
+  background: rgba(244,245,247,0.50);
   pointer-events: none;
   border-radius: var(--r-full);
-  box-shadow: 0 0 6px rgba(242,244,248,0.25);
+  box-shadow: 0 0 6px rgba(244,245,247,0.25);
 }
 #rate-label {
   font-size: 10px; font-weight: 600; color: var(--accent2); letter-spacing: 2px;
@@ -566,7 +589,7 @@ body.event-open:not(.event-folded) #event-fab {
 
   /* 底部时间轴：压缩留白，触摸目标保持足够大 */
   #timeline-bar { padding: 6px 10px 12px; gap: 6px; }
-  #play-btn { width: 42px; height: 42px; }
+  #play-btn { width: 30px; height: 30px; }
   .mark { width: 13px; height: 13px; }
 
   /* 横屏手机：进一步压缩事件面板高度，避免与时间轴重叠 */
@@ -589,7 +612,7 @@ body.event-open:not(.event-folded) #event-fab {
 /* ---------- 帮助 ---------- */
 #help-modal {
   position: absolute; inset: 0; z-index: 30;
-  background: rgba(3,5,10,.62);
+  background: rgba(0,0,0,.62);
   display: flex; align-items: center; justify-content: center;
   padding: 16px;
   backdrop-filter: blur(20px) saturate(1.3); -webkit-backdrop-filter: blur(20px) saturate(1.3);
@@ -625,7 +648,7 @@ body.event-open:not(.event-folded) #event-fab {
 #help-box li b { color: var(--accent2-soft); font-weight: 600; }
 #help-box p { font-size: 12px; color: var(--text-dim); line-height: 1.7; margin-bottom: 16px; }
 #help-github { text-align: center; }
-#help-github a { color: var(--primary); text-decoration: none; }
+#help-github a { color: var(--primary-bright); text-decoration: none; }
 #help-github a:hover { text-decoration: underline; }
 /* miuix 主按钮：HyperOS 蓝胶囊 */
 #help-close {
@@ -635,7 +658,7 @@ body.event-open:not(.event-folded) #event-fab {
   font-size: 14px; font-weight: 600; letter-spacing: 1px; cursor: pointer;
   transition: background-color .3s var(--ease), transform .15s var(--ease);
 }
-#help-close:hover { background: #74acff; }
+#help-close:hover { background: var(--primary-bright); }
 #help-close:active { transform: scale(0.98); }
 
 /* ---------- 加载 ---------- */
@@ -657,7 +680,7 @@ body.event-open:not(.event-folded) #event-fab {
 .load-row.main { margin-bottom: -2px; }
 .load-bar {
   flex: 1; height: 9px; border-radius: 5px; overflow: hidden;
-  background: rgba(92, 157, 255, .10);
+  background: rgba(52, 130, 255, .10);
   display: flex;                       /* 分段槽并排（仅主条），宽度 = 字节占比 */
   gap: 2px;                            /* 段间 2px 间隙（宽度已在 JS 侧扣除） */
 }
@@ -722,7 +745,7 @@ body.event-open:not(.event-folded) #event-fab {
 .label:hover,
 .label:focus-visible {
   opacity: 1; color: #ffffff;
-  text-shadow: 0 0 7px rgba(0,0,0,.95), 0 0 12px rgba(200,222,255,.45);
+  text-shadow: 0 0 7px rgba(0,0,0,.95), 0 0 12px rgba(160,196,255,.45);
 }
 .label.sc { color: var(--accent2); font-weight: 600; }
 .label.sc:hover, .label.sc:focus-visible {
