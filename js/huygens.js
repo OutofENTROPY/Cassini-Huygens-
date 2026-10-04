@@ -181,8 +181,10 @@ window.HuygensVis = (function () {
       };
 
       // 标记点 + 标签（点击聚焦 Huygens，事件由 main.js 接线）
+      // 纹理与 Cassini 主标记同用 dotTexture（紧凑白核+窄光晕）：缩小时与母船
+      // 亮点观感一致；markerTexture 的宽暖光晕叠在 Titan 小亮点上会显得更大
       const sm = new THREE.SpriteMaterial({
-        map: ctx.markerTexture(), transparent: true, depthTest: false, sizeAttenuation: true,
+        map: ctx.dotTexture(), transparent: true, depthTest: false, sizeAttenuation: true,
       });
       marker = new THREE.Sprite(sm);
       marker.center.set(0.5, 0.5);
@@ -494,18 +496,20 @@ window.HuygensVis = (function () {
       }
     }
 
-    // ---- 标记点（模型不可读时接管）：屏占驱动收敛，仅模型过渡期用大标记，
-    // 其余缩放级别均为 2.6px 行星档小亮点（与 Cassini 主标记同一曲线） ----
+    // ---- 标记点（模型不可读时接管）：恒定 2.2px 小亮点（略小于 Cassini 主标记
+    // 的 2.6px）。不做 Cassini 那套「模型过渡期放大到 10px」的交接曲线——放大
+    // 过程中 10px 大点呈光晕状而母船远距是小点，观感不对称（用户反馈）；
+    // 模型↔标记的平滑交接只由透明度淡入淡出承担。
+    // 不得设 Cassini 式的 0.02 km 尺度下限：那是按 10px 过渡标记标定的，恒定
+    // 2.2px 时在 2~9 km 中距段会被下限抬成 4~38px 的巨型光晕（用户反馈的根源） ----
     if (marker) {
-      let shrink = THREE.MathUtils.clamp((6 - modelPx) / 5.5, 0, 1);
-      shrink = shrink * shrink * (3 - 2 * shrink);
-      const markerPx = 10 - 7.4 * shrink;
-      const op = gone ? 0 : Math.max(0, Math.min(1, (6 - modelPx) / 4)) * (1 - 0.1 * shrink);
+      const markerPx = 2.2;
+      const op = gone ? 0 : Math.max(0, Math.min(1, (6 - modelPx) / 4));
       // 遮挡剔除（同 Cassini 标记）：探测器被行星盘面挡住时隐藏亮点
       marker.visible = op > 0.01 && !ctx.viewOccluded(pos[0], pos[1], pos[2], null);
       marker.material.opacity = op;
       marker.position.copy(probe.position);
-      const desired = Math.max(projScale * d * (markerPx / hPx), 0.02);   // 精确屏占（无 ×2 系数）
+      const desired = projScale * d * (markerPx / hPx);   // 精确屏占（无下限、无 ×2 系数）
       marker.scale.set(desired, desired, 1);
     }
     if (labelEl) {

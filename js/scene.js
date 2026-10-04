@@ -1701,7 +1701,7 @@
         scene.add(huygensMesh);
         huygensMesh.visible = false;
         window.HuygensVis.init({
-          scene, registry, eclToThree, cassiniPosAt, markerTexture, viewOccluded, modelFadeK,
+          scene, registry, eclToThree, cassiniPosAt, dotTexture, viewOccluded, modelFadeK,
           trailOpts: () => trailOptions,
           // 分离前组合体姿态（Cassini 体轴 → 惯性系）：探测器按真实结构挂点
           // 定位到组合体上需要与母船同姿态，随真实姿态回放逐帧更新
