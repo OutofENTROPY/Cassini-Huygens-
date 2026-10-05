@@ -746,9 +746,11 @@
   function init(canvas, labelsContainer, onLabelClick) {
     labelsEl = labelsContainer;
     renderer = new THREE.WebGLRenderer({
-      canvas, antialias: false, logarithmicDepthBuffer: true,
+      canvas, antialias: true, logarithmicDepthBuffer: true,
     });
-    // 无抗锯齿：原生像素比渲染（上限 2 覆盖绝大多数屏），边缘锐利、填充率开销最小
+    // MSAA 抗锯齿：行星 limb / 环缘的 1px 轮廓锯齿在盘面暗带（环影、夜面）
+    // 衬托下呈明显「拼接」感——开 MSAA 平滑几何边。像素比上限 2 不变，
+    // 桌面级 GPU 填充率开销可接受
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputEncoding = THREE.sRGBEncoding;
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -1229,6 +1231,11 @@
   const BLACK_TEX = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
   BLACK_TEX.needsUpdate = true;
 
+  /* _ringShadowF 契约：本函数在 fragment 全局域声明（默认 1.0），土星环影
+   * 注入（buildBodies 内，链式于本函数之后）在其 aomap 块中按环 alpha 改写，
+   * 供下方 dithering 加色同步遮暗——环影挡住的是整根大气柱，雾带（rim/wash）
+   * 在光照管线之后加色，不受 reflectedLight 乘法影响，须显式乘环影因子。
+   * 无环影天体（地球/金星/火星/土卫六）恒为 1.0，行为不变。 */
   function applyAtmoRim(mat, def) {
     const col = (c) => Array.isArray(c) ? new THREE.Color(c[0], c[1], c[2]) : new THREE.Color(c);
     mat.userData.atmoU = {
@@ -1254,7 +1261,7 @@
           vAtmoV = normalize(-atmoMv.xyz);`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>',
-          '#include <common>\nvarying vec3 vAtmoN;\nvarying vec3 vAtmoV;\nuniform vec3 uAtmoColor;\nuniform vec3 uSunDirView;\nuniform float uAtmoIntensity;\nuniform float uAtmoPower;\nuniform float uAtmoWash;\nuniform sampler2D uNightMap;\nuniform float uNightIntensity;\nuniform vec3 uSunsetColor;\nuniform float uSunsetIntensity;')
+          '#include <common>\nfloat _ringShadowF = 1.0;\nvarying vec3 vAtmoN;\nvarying vec3 vAtmoV;\nuniform vec3 uAtmoColor;\nuniform vec3 uSunDirView;\nuniform float uAtmoIntensity;\nuniform float uAtmoPower;\nuniform float uAtmoWash;\nuniform sampler2D uNightMap;\nuniform float uNightIntensity;\nuniform vec3 uSunsetColor;\nuniform float uSunsetIntensity;')
         .replace('#include <dithering_fragment>', `
           #include <dithering_fragment>
           {
@@ -1270,7 +1277,8 @@
             float sunset = uSunsetIntensity * pow(clamp(1.0 - abs(nds), 0.0, 1.0), 3.5);
             vec3 atmo = mix(uAtmoColor, uSunsetColor, clamp(sunset, 0.0, 1.0));
             // wash：昼面常数薄雾——把整盘往大气色抬（淡蓝观感）；rim 只够到盘缘
-            gl_FragColor.rgb += atmo * ((rim * uAtmoIntensity + uAtmoWash) * day);
+            // 环影暗带上的雾柱同被环遮挡：加色须乘 _ringShadowF（见函数头契约）
+            gl_FragColor.rgb += atmo * ((rim * uAtmoIntensity + uAtmoWash) * day) * _ringShadowF;
           }`);
     };
     mat.customProgramCacheKey = () => 'atmo-rim';
@@ -1336,21 +1344,40 @@
     }
     const rm = new THREE.MeshLambertMaterial({
       map: rt, side: THREE.DoubleSide, transparent: true,
-      depthWrite: false, alphaTest: 0.01,
+      // depthWrite 必须开：环物质（内缘 ≥1.11R）恒在大气辉光壳（1.045R）之外，
+      // 逐视线顺序必为【近侧环 → 大气弦 → 远侧环】。辉光壳后绘（renderOrder 1）
+      // 并按深度剔除被环挡住的弧段——近侧环遮住大气亮弧、远侧环被霾罩，两端
+      // 同时正确；关深度则 painter 序只能二选一（环叠亮弧 / 亮弧叠印环面）。
+      // 代价：半透明环像素写整深度，后绘轨迹线/标记在半透明环后被硬遮——
+      // 不透明环段本就该挡住背后物体，比旧「全透见」更接近真实
+      depthWrite: true, alphaTest: 0.01,
     });
     rm.userData.uniforms = {
       uSunPos: { value: new THREE.Vector3() },
       uPlanetPos: { value: new THREE.Vector3() },
       uPlanetR: { value: def.radius },
+      uSunAngR: { value: 0 },   // 太阳角半径（行星处，逐帧）：本影收缩/半影宽度
+      // 前向散射强度（逆光透射亮度上限，视觉标定）：属「效果」仅真实光照
+      // 模式启用，逐帧按 realisticOn 置 0.85/0；本影遮断是几何修正不随模式
+      uForwS: { value: 0 },
     };
     // 行星本影内的环段（item 3）：aomap_fragment 只乘直射光——
-    // 普通模式剩环境光（与行星背阳面亮度一致），真实光照模式全黑
+    // 普通模式剩环境光（与行星背阳面亮度一致），真实光照模式全黑。
+    // 前向散射（卡西尼「土星背光」观感）：真实环的厘米级冰粒会透射阳光，
+    // 逆光（视线与太阳方向同向）时环通体透亮。物理上透射亮度 ∝ 相位函数
+    //（视线-太阳对齐度，前向强峰）× 光学厚度权重——纯透过率 (1−α) 在环缝
+    // 处无物质发光为伪，取 α·(1−α)·4（缝处零、中等厚度峰值、最厚 B 环难
+    // 穿透回落），色偏暖（透射穿过尘埃的橙棕色调）。受行星本影同款遮断：
+    // 环段入影则无光可透，复用下方 sh 因子。前向散射属「效果」仅在真实光照
+    // 模式启用（uForwS 逐帧置 0/0.85），本影遮断为几何修正、两模式均生效。
+    // 相机制不变量：map/vUv 采样与
+    // 漫反射同源，cameraPosition 为内置 uniform；DoubleSide 两侧同享。
     rm.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, rm.userData.uniforms);
       shader.vertexShader = 'varying vec3 vWorldPos;\n' + shader.vertexShader.replace(
         '#include <begin_vertex>',
         '#include <begin_vertex>\n vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;');
-      shader.fragmentShader = 'uniform vec3 uSunPos;\nuniform vec3 uPlanetPos;\nuniform float uPlanetR;\nvarying vec3 vWorldPos;\n' +
+      shader.fragmentShader = 'uniform vec3 uSunPos;\nuniform vec3 uPlanetPos;\nuniform float uPlanetR;\nuniform float uSunAngR;\nuniform float uForwS;\nvarying vec3 vWorldPos;\n' +
         shader.fragmentShader.replace('#include <aomap_fragment>',
           `#include <aomap_fragment>
           {
@@ -1358,10 +1385,25 @@
             vec3 toP = uPlanetPos - uSunPos;
             float tP = dot(toP, Ldir);
             float dFrag = length(vWorldPos - uSunPos);
+            float sh = 1.0;
             if (tP > 0.0 && tP < dFrag) {
               float closest = length(toP - Ldir * tP);
-              float sh = smoothstep(uPlanetR * 0.97, uPlanetR * 1.06, closest);
+              // 本影半径 R−dP·rs 随距离收缩、半影外缘 R+dP·rs——dP 是片段沿
+              // 光线越过行星中心的距离（dFrag−tP），不是日→片距 tP：半影宽度
+              // 从行星起算（环处 ~110 km）；误用 tP（~日地距离量级）会把半影
+              // 撑到数十万 km，整片背阳环糊成半黑。下限 0.002R 防亚像素闪烁
+              float dP = max(dFrag - tP, 0.0);
+              float penW = max(dP * uSunAngR, uPlanetR * 0.002);
+              sh = smoothstep(uPlanetR - penW, uPlanetR + penW, closest);
               reflectedLight.directDiffuse *= sh;
+            }
+            vec3 Vdir = normalize(vWorldPos - cameraPosition);
+            float cosP = dot(Vdir, -Ldir);   // 逆光度：视线与「面元→太阳」同向 ≈ 1
+            if (cosP > 0.0) {
+              vec4 texel = texture2D(map, vUv);
+              float ta = texel.a * (1.0 - texel.a) * 4.0;
+              reflectedLight.directDiffuse += vec3(1.0, 0.78, 0.55) *
+                (ta * pow(cosP, 8.0) * uForwS * sh);
             }
           }`);
     };
@@ -1531,10 +1573,14 @@
             polar: new THREE.Vector3(0, 1, 0).applyQuaternion(tiltGroup.quaternion).normalize(),
           }));
         halo.scale.set(def.radius * shell, def.radius * shell * (1 - fl), def.radius * shell);
-        // 渲染顺序置于星空(-9)之后、一切透明体（环/轨迹/标签，0+）之前：
-        // 辉光壳是加色混合，若在环之后绘制会把大气亮弧叠印到环面上——
-        // 环在后绘制时按自身 alpha 正常混合，隔着不透明环段看不到亮弧
-        halo.renderOrder = -1;
+        // 渲染顺序置于环（renderOrder 0，写深度）之后、标记（3+）之前：
+        // 环物质恒在壳外（环内缘 ≥1.11R > 壳 1.045R），逐视线顺序必为
+        // 【近侧环 → 大气弦 → 远侧环】。旧序（壳 -1 先绘） painter 序只能
+        // 保一头：远侧环会 alpha 叠印在大气亮弧上方（环显示在大气上）。
+        // 壳改后绘 + 环写深度 → 近侧环按深度遮住亮弧、远侧环被霾罩，两端
+        // 同时正确；盘内弧段仍由行星不透明深度剔除，坠入段内视（BackSide
+        // 远半球内表面）不受影响
+        halo.renderOrder = 1;
         tiltGroup.add(halo);
         entry.haloShell = halo;
       }
@@ -1592,7 +1638,10 @@
                       if (rr > uInner && rr < uOuter) {
                         float uu = (rr - uInner) / (uOuter - uInner);
                         float aa = texture2D(uRingMap, vec2(uu, 0.5)).a;
-                        reflectedLight.directDiffuse *= (1.0 - aa * uRingShadowDepth);
+                        // 因子提为全局 _ringShadowF（applyAtmoRim 声明）：dithering
+                        // 阶段的大气 rim/wash 加色按同因子遮暗
+                        _ringShadowF = 1.0 - aa * uRingShadowDepth;
+                        reflectedLight.directDiffuse *= _ringShadowF;
                       }
                     }
                   }
@@ -2127,6 +2176,14 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
         const u = entry.ringMesh.material.userData.uniforms;
         u.uSunPos.value.set(-camWorld.x, -camWorld.y, -camWorld.z);
         u.uPlanetPos.value.copy(entry.group.position);
+        // 太阳角半径（行星处）：半影宽度随日-行距离逐帧更新（环物质写深度，
+        // 大气辉光壳后绘按深度剔除，见 buildRingSystem / halo 注释）
+        const dPS = Math.hypot(
+          entry.group.position.x + camWorld.x,
+          entry.group.position.y + camWorld.y,
+          entry.group.position.z + camWorld.z) || 1;
+        u.uSunAngR.value = Math.asin(Math.min(1, SUN_RADIUS / dPS));
+        u.uForwS.value = realisticOn ? 0.85 : 0;
       }
       if (entry.mesh && entry.mesh.material.userData && entry.mesh.material.userData.shadowU) {
         const u = entry.mesh.material.userData.shadowU;
