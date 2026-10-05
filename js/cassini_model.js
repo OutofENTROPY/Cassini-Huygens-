@@ -63,7 +63,10 @@ window.CassiniModel = (function () {
     'plastic black': { metal: 0.08, rough: 0.60, env: 0.25 },
     tex_01:        { metal: 1.00, rough: 1.00, env: 0.60, nmScale: 1.0 },
   };
-  const eclipseMats = [];          // { mat, baseColor, baseMetal, baseEnv, tag }
+  /* 掩食因子 uniform 按实体分套（'sc' 轨道器/组合体、'probe' 探测器）：
+   * 分离后两者可相距数万 km、本影独立解算，同一因子只对解算实体正确 */
+  const eclSC = { value: 1 };
+  const eclProbe = { value: 1 };
   const eclipseSeen = new Set();
   let envTex = null;
 
@@ -222,27 +225,25 @@ window.CassiniModel = (function () {
       if (p.ao && mat.map) { mat.aoMap = mat.map; mat.aoMapIntensity = p.ao; }
       mat.envMap = env;
       mat.envMapIntensity = p.env;
-      injectFill(mat, tag === 'probe' ? shineProbe : shineSC);
+      injectFill(mat, tag === 'probe' ? shineProbe : shineSC, tag);
       mat.needsUpdate = true;
-      eclipseMats.push({ mat, baseColor: mat.color.clone(), baseMetal: hasMRMap ? 1 : p.metal, baseEnv: p.env, tag });
     }
   }
 
-  /* 行星本影掩食调制（item 6，scene.js 真实光照模式下逐帧调用）：
-   * f→0 时 color/env 随 f 归零，金属度→1 使介质部件 F0 随 color 归零，
-   * 消除塑料/白漆上残余的镜面高光 → 阴影内完全不反光 */
-  let eclipseLast = [-1, -1];
+  /* 行星本影掩食调制（真实光照模式下 scene.js 逐帧调用）：旧实现按因子改写
+   * 材质 color/envMapIntensity/metalness——逐材质属性突变，且 metalness→1 的
+   * 介质高光抑制只是近似。改为 uniforms 注入（同 uPointOff 机制，值写共享
+   * uniform 对象、零重编译）：uEclipse 乘平行光 directLight.color —— 直射
+   * 漫反射与镜面（含介质白漆高光，F0 白但辐度随光色归零）按同一因子衰减；
+   * 天空 env 的间接镜面在 aomap 注入块开头乘 uEclipse（假 IBL，本影内应
+   * 熄灭）；行星反照光在其后累加、不受调制（采样面元自带局地光照权重，
+   * 飞船进入本影时看到的正是行星夜面，见 scene.js 调用处注释）。普通模式
+   * uEclipse 恒 1（scene.js 切换时 setEclipse(1,1) 复位），点光照明不受影响 */
   function setEclipse(fSC, fProbe) {
     const a = THREE.MathUtils.clamp(fSC === undefined ? 1 : fSC, 0, 1);
     const b = THREE.MathUtils.clamp(fProbe === undefined ? a : fProbe, 0, 1);
-    if (Math.abs(a - eclipseLast[0]) < 0.004 && Math.abs(b - eclipseLast[1]) < 0.004) return;
-    eclipseLast[0] = a; eclipseLast[1] = b;
-    for (const e of eclipseMats) {
-      const f = e.tag === 'probe' ? b : a;
-      e.mat.color.copy(e.baseColor).multiplyScalar(f);
-      e.mat.envMapIntensity = e.baseEnv * f;
-      e.mat.metalness = e.baseMetal + (1 - e.baseMetal) * (1 - f);
-    }
+    if (Math.abs(a - eclSC.value) < 0.004 && Math.abs(b - eclProbe.value) < 0.004) return;
+    eclSC.value = a; eclProbe.value = b;
   }
 
   /* 模型级微弱补光（背光面保留结构可读性）——注入飞船自身材质的视线前向
@@ -268,27 +269,38 @@ window.CassiniModel = (function () {
    * include 指令（lib vendored r147，锚点串唯一）。 */
   const LF_BEGIN_NOPOINT = (() => {
     const chunk = THREE.ShaderChunk.lights_fragment_begin;
-    const out = chunk.replace(
+    let out = chunk.replace(
       'getPointLightInfo( pointLight, geometry, directLight );',
       'getPointLightInfo( pointLight, geometry, directLight );\n\t\t\tdirectLight.color *= ( 1.0 - uPointOff );');
     if (out === chunk) console.warn('uPointOff: lights_fragment_begin 锚点未命中');
-    return out;
+    // 掩食因子乘平行光：飞船真实模式直射光仅 shipSunLight 一条（sunLight 是
+    // 点光，已由 uPointOff 归零），普通模式 uEclipse 恒 1 不参与。直射漫反射
+    // 与镜面同随光色衰减，介质白漆高光无需再借 metalness 近似抑制
+    const out2 = out.replace(
+      'getDirectionalLightInfo( directionalLight, geometry, directLight );',
+      'getDirectionalLightInfo( directionalLight, geometry, directLight );\n\t\t\tdirectLight.color *= uEclipse;');
+    if (out2 === out) console.warn('uEclipse: lights_fragment_begin 锚点未命中');
+    return out2;
   })();
 
-  function injectFill(mat, shine) {
+  function injectFill(mat, shine, tag) {
     // 非 lit 材质（MeshBasicMaterial 等）无 aomap_fragment/lighting，replace 为空操作；
     // uniform 声明须注入全局作用域（aomap_fragment / lights_fragment_begin 位于 main() 内）
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uFillI = fillUniform;
       shader.uniforms.uPointOff = pointOffUniform;
+      shader.uniforms.uEclipse = tag === 'probe' ? eclProbe : eclSC;
       shader.uniforms.uShineDir = shine.dir;
       shader.uniforms.uShineCol = shine.col;
       shader.uniforms.uShineW = shine.w;
-      shader.fragmentShader = 'uniform float uFillI;\nuniform float uPointOff;\n' +
+      shader.fragmentShader = 'uniform float uFillI;\nuniform float uPointOff;\nuniform float uEclipse;\n' +
         'uniform vec3 uShineDir;\nuniform vec3 uShineCol;\nuniform float uShineW;\n' + shader.fragmentShader
         .replace('#include <aomap_fragment>',
         `#include <aomap_fragment>
         {
+          // 天空 env 的间接镜面随掩食熄灭：乘因子须在 shine 注入之前——
+          // 本块后半累加的行星反照光镜面不受掩食调制（同 diffuse 项理由）
+          reflectedLight.indirectSpecular *= uEclipse;
           float fillW = 0.5 * dot(normal, vec3(0.0, 0.0, -1.0)) + 0.5;
           vec3 fillIrr = mix(vec3(0.102, 0.114, 0.149), vec3(0.275, 0.314, 0.416), fillW) * uFillI;
           reflectedLight.indirectDiffuse += fillIrr * RECIPROCAL_PI * diffuseColor.rgb;
