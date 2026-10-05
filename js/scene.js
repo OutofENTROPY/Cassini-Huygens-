@@ -1391,6 +1391,91 @@
       (prevKey ? prevKey.call(mat) : '') + '+shoulder' + (tag || '');
   }
 
+  /* —— 卫星凌日投影（item 3）——
+   * 卫星经过太阳与行星之间时，在母行星表面/云层投下影斑：逐片元对「片元→太阳」
+   * 射线做与每颗卫星（正球近似，半径 = 赤道半径）的最近距判定，命中则本影遮挡
+   * 直射光。球-球解析：toS = satPos − vWPos，t = dot(toS, ld)（须 0 < t < distS，
+   * 卫星位于片元与太阳之间），最近距 d = |toS − ld·t|。本影/半影半径逐帧按物理
+   * 几何计算（updateRender 填 uSatUm/uSatPm）：太阳角半径 θs = R☉/日卫距，影平面
+   * 距卫星 L（卫星→行星心沿影轴投影）→ 本影 r_u = R_m − L·θs、半影外缘
+   * r_p = R_m + L·θs。titan 凌日土星实测几何：r_u ≈ 1980 km ≈ 0.77R_m（比卫星
+   * 本体小）、半影环宽 2Lθs ≈ 1190 km——旧版固定 0.96–1.06R 既高估本影又把半影
+   * 压窄 ~5 倍（旧注释把带宽错推成 ∝R_m，实际 ∝L）。本影不乘零：uShFloor =
+   * SAT_SH_FLOOR 残余直射，近似真实「环反照光 + 大气侧向散射」底亮（Cassini 影像
+   * 影斑中心约为周围云顶的 10–25%，云纹可辨）。r_u ≤ 0 为伪本影（环食，中心
+   * 实际仍亮），钳 0.12R 保底——环食亮度偏暗，已知近似。作用对象 =
+   * reflectedLight.directDiffuse：
+   * excludeDirLight 后行星直射只剩太阳点光（ambient 走 indirectDiffuse 不受影响；
+   * 注入点 aomap_fragment 之后，与土星环影补丁串联时两者均为 directDiffuse 乘法，
+   * 交换律下顺序无关）。坐标系：全场景浮动原点——vWPos（modelMatrix 变换）与
+   * 卫星 group.position 同为场景系，太阳 = −camWorld，相对量一致（updateRender
+   * 「卫星凌日投影 uniform」段逐帧更新）。门禁：属「效果」，uSatShade 仅真实光照
+   * 置 1/0（uForwS 同款，realisticOn 初始化兜底）。已知近似：dithering 阶的大气
+   * rim/wash 加色不乘影因子（环影的 _ringShadowF 契约未扩展）——影斑位于盘面
+   * 内部、rim 趋零，wash 为均匀薄雾，误差远低于感知阈。varying vWPos：土星环影
+   * 补丁已注入同名 varying（同款 modelMatrix·position 赋值）时直接复用，防重复
+   * 声明编译错误。tag 同 excludeDirLight 契约（program 缓存防错配）。 */
+  const SAT_MAX = 8;
+  // 本影残余亮度（真实光照下）：环反照光 + 大气侧向散射的底亮近似，Cassini
+  // 影像实测影斑中心 ≈ 周围云顶的 10–25%
+  const SAT_SH_FLOOR = 0.15;
+  const _satAx = new THREE.Vector3();
+  const _satRel = new THREE.Vector3();
+  function applySatTransit(mat, tag) {
+    const satU = {
+      uSunPos: { value: new THREE.Vector3() },
+      uSatPos: { value: Array.from({ length: SAT_MAX }, () => new THREE.Vector3()) },
+      uSatR: { value: new Float32Array(SAT_MAX) },
+      uSatUm: { value: new Float32Array(SAT_MAX) },
+      uSatPm: { value: new Float32Array(SAT_MAX) },
+      uSatN: { value: 0 },
+      uSatShade: { value: realisticOn ? 1 : 0 },
+      uShFloor: { value: SAT_SH_FLOOR },
+    };
+    mat.userData.satU = satU;
+    const prevCompile = mat.onBeforeCompile;
+    mat.onBeforeCompile = (shader, r) => {
+      if (prevCompile) prevCompile(shader, r);
+      Object.assign(shader.uniforms, satU);
+      const reuseVWPos = shader.fragmentShader.includes('varying vec3 vWPos');
+      // uSunPos / vWPos 可能已被链上前序补丁声明（土星环影前缀注入同名 uniform /
+      // varying，语义一致——太阳场景系位置、modelMatrix·position 片元世界位），
+      // 条件防重定义编译错误
+      const reuseSunU = shader.fragmentShader.includes('uniform vec3 uSunPos');
+      if (!reuseVWPos) {
+        shader.vertexShader = 'varying vec3 vWPos;\n' + shader.vertexShader.replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\n vWPos = (modelMatrix * vec4(position, 1.0)).xyz;');
+      }
+      shader.fragmentShader =
+        (reuseSunU ? '' : 'uniform vec3 uSunPos;\n') +
+        'uniform vec3 uSatPos[' + SAT_MAX + '];\nuniform float uSatR[' + SAT_MAX + '];\nuniform float uSatUm[' + SAT_MAX + '];\nuniform float uSatPm[' + SAT_MAX + '];\nuniform int uSatN;\nuniform float uSatShade;\nuniform float uShFloor;\n' +
+        (reuseVWPos ? '' : 'varying vec3 vWPos;\n') +
+        shader.fragmentShader.replace('#include <aomap_fragment>', `#include <aomap_fragment>
+        {
+          if (uSatShade > 0.5 && uSatN > 0) {
+            vec3 _sd = uSunPos - vWPos;
+            float _ds = length(_sd);
+            vec3 _ld = _sd / _ds;
+            float _sh = 1.0;
+            for (int i = 0; i < ${SAT_MAX}; i++) {
+              if (i >= uSatN) break;
+              vec3 _to = uSatPos[i] - vWPos;
+              float _t = dot(_to, _ld);
+              if (_t > 0.0 && _t < _ds) {
+                float _d = length(_to - _ld * _t);
+                _sh = min(_sh, mix(uShFloor, 1.0, smoothstep(uSatUm[i], uSatPm[i], _d)));
+              }
+            }
+            reflectedLight.directDiffuse *= _sh;
+          }
+        }`);
+    };
+    const prevKey = mat.customProgramCacheKey;
+    mat.customProgramCacheKey = () =>
+      (prevKey ? prevKey.call(mat) : '') + '+sattransit' + (tag || '');
+  }
+
   /* —— 气态行星环参数 ——
    * 内外半径（km）与纹理：土星/天王星用 NASA Eyes 官方环径向条带
    * （sprites/saturn_rings_top.png、uranus_rings.png，u=0 内缘），半径取其
@@ -1818,6 +1903,27 @@
         : { size: 2.6, op0: 0.75, op1: 1.0 };
 
       registry.set(def.name, entry);
+    }
+
+    // —— 卫星凌日投影（item 3）：卫星按母行星分组，母行星表面/云层材质注入影判定 ——
+    // 仅 earth（moon）与 saturn（titan/enceladus/iapetus/rhea/dione/tethys/mimas）
+    // 有卫星；其余行星 uSatN=0 不注入（省 program 变体）。
+    for (const [name, entry] of registry) {
+      if (name === '__sunLight' || !entry.parent) continue;
+      const p = registry.get(entry.parent);
+      if (!p) continue;
+      (p.satMoons || (p.satMoons = [])).push(entry);
+    }
+    for (const [, p] of registry) {
+      if (p.satMoons && p.surfMat) {
+        applySatTransit(p.surfMat, 'surf');
+        if (p.clouds) applySatTransit(p.clouds.material, 'cloud');
+        // updateRender 逐帧更新入口:表面/云层共用同一组 satU(applySatTransit
+        // 以 mat.userData.satU 存储;同一行星两材质各持一份,取表面的作为代表——
+        // 每帧同时刷新两者)
+        p.satU = p.surfMat.userData.satU;
+        p.satUCloud = p.clouds ? p.clouds.material.userData.satU : null;
+      }
     }
   }
 
@@ -2293,6 +2399,34 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
         const u = entry.mesh.material.userData.shadowU;
         u.uSunPos.value.set(-camWorld.x, -camWorld.y, -camWorld.z);
         u.uPlanetPos.value.copy(entry.group.position);
+      }
+      // 卫星凌日投影（item 3，见 applySatTransit 注释）：uSatShade 按门禁规则
+      // 仅真实光照置 1/0；卫星场景系位置 = group.position（updatePositions 已更新）
+      if (entry.satU) {
+        const n = Math.min(entry.satMoons.length, SAT_MAX);
+        for (const u of [entry.satU, entry.satUCloud]) {
+          if (!u) continue;
+          u.uSunPos.value.set(-camWorld.x, -camWorld.y, -camWorld.z);
+          u.uSatShade.value = realisticOn ? 1 : 0;
+          u.uSatN.value = n;
+          for (let i = 0; i < n; i++) {
+            const sm = entry.satMoons[i];
+            u.uSatPos.value[i].copy(sm.group.position);
+            u.uSatR.value[i] = sm.radius;
+            // 物理影半径（km，见 applySatTransit 注释）：θs = R☉/日卫距，
+            // L = 卫星→行星心沿影轴投影 → r_u = R − Lθs、r_p = R + Lθs
+            _satAx.copy(sm.group.position).sub(u.uSunPos.value);
+            const dSun = _satAx.length() || 1;
+            _satAx.divideScalar(dSun);
+            _satRel.copy(entry.group.position).sub(sm.group.position);
+            const L = Math.max(0, _satRel.dot(_satAx));
+            const th = SUN_RADIUS / dSun;
+            const ru = Math.max(sm.radius * 0.12, sm.radius - L * th);
+            const rp = Math.max(ru + sm.radius * 0.05, sm.radius + L * th);
+            u.uSatUm.value[i] = ru;
+            u.uSatPm.value[i] = rp;
+          }
+        }
       }
     }
 
