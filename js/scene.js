@@ -11,6 +11,15 @@
 (function () {
   'use strict';
 
+  /* item 1（真实光照后处理链）前置补丁：本版 three 渲染到 RT 时输出编码强制
+   * 线性（outputEncoding 只对画布生效），太阳 bloom 的 rtSun 便拿不到与画布
+   * 一致的显示空间值。把编码 chunk 换成硬编码 LinearTosRGB——画布路径（
+   * outputEncoding=sRGB）逐位不变，RT 路径从恒等变为与画布相同的编码。
+   * 深度/阴影材质（depth/distance RGBA）不以该 chunk 收尾，不受影响；
+   * 自定义 ShaderMaterial 不含该 chunk，同样不受影响。须在首个材质程序
+   * 编译前执行（模块加载即生效）。 */
+  THREE.ShaderChunk.encodings_fragment = 'gl_FragColor = LinearTosRGB( gl_FragColor );';
+
   const DATA = window.CASSINI_DATA;
   // 卫星细网格（data/moons_data.js，运行时 Catmull-Rom 插值）并入天体表
   if (window.MOONS_DATA) {
@@ -799,6 +808,7 @@
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+      resizePost();
     });
   }
 
@@ -1344,6 +1354,43 @@
       (prevKey ? prevKey.call(mat) : '') + '+nodir' + (tag || '');
   }
 
+  /* 高光软肩（item 1「Tone mapping」的定向实现）：行星表面/云层/环的直射亮面
+   * 在 SUN_INTENSITY=2.075 下 HDR 到 ~1.45–1.9，8-bit 输出硬削顶成白板
+   * （实测 WebKit：木星向阳面 11–16% 像素 min(rgb)≥250、土星亮区 43–58% 压平
+   * 在 240–252；bloom 开/关逐位一致，与 bloom 无关——`tools/debug_overexp.js`）。
+   * 在 sRGB 编码之后（显示空间）注入高光软肩：膝点 0.78 以上指数压缩、渐近
+   * 1.0——削顶区恢复层次、亮面从「炽白」回落到「明亮」；暗部/中间调（显示值
+   * ≤0.78）逐位不变。**两模式全局生效**（2026-10-05 用户确认：普通模式同样
+   * 过曝，「保持和打开真实光照时一样」——削顶是数据丢失，归 bug 修复类，不随
+   * 模式门控）。注入点选 dithering_fragment 锚点：
+   * 对带大气 rim 的材质，prev 已消费该锚点但其模板内仍含 include 指令，replace
+   * 仍命中且位于 rim 块之前——rim 的加色不参与压肩（大气辉光本属加色语义）。
+   * tag 防 program 缓存错配（同 excludeDirLight 契约）。 */
+  const shoulderMats = [];
+  const SHOULDER_GLSL = `
+          {
+            float _m = max(gl_FragColor.r, max(gl_FragColor.g, gl_FragColor.b));
+            if (uShoulder > 0.5 && _m > 0.78) {
+              float _f = 0.78 + 0.22 * (1.0 - exp(-(_m - 0.78) / 0.22));
+              gl_FragColor.rgb *= _f / _m;
+            }
+          }`;
+  function applySoftShoulder(mat, tag) {
+    if (!mat.userData.shoulderU) mat.userData.shoulderU = { value: 1 };
+    shoulderMats.push(mat.userData.shoulderU);
+    const prevCompile = mat.onBeforeCompile;
+    mat.onBeforeCompile = (shader, r) => {
+      if (prevCompile) prevCompile(shader, r);
+      shader.uniforms.uShoulder = mat.userData.shoulderU;
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform float uShoulder;')
+        .replace('#include <dithering_fragment>', SHOULDER_GLSL + '\n#include <dithering_fragment>');
+    };
+    const prevKey = mat.customProgramCacheKey;
+    mat.customProgramCacheKey = () =>
+      (prevKey ? prevKey.call(mat) : '') + '+shoulder' + (tag || '');
+  }
+
   /* —— 气态行星环参数 ——
    * 内外半径（km）与纹理：土星/天王星用 NASA Eyes 官方环径向条带
    * （sprites/saturn_rings_top.png、uranus_rings.png，u=0 内缘），半径取其
@@ -1436,6 +1483,7 @@
           }`);
     };
     excludeDirLight(rm, 'ring');   // 环面同样忽略飞船平行光（本影判定只针对太阳点光）
+    applySoftShoulder(rm, 'ring'); // 环亮弧同受直射光削顶，一并压肩
     const ring = new THREE.Mesh(rg, rm);
     ring.rotation.x = Math.PI / 2;
     tiltGroup.add(ring);
@@ -1542,6 +1590,7 @@
       // flatten：扁椭球（木星等气态巨行星）——Y 压极轴，赤道半径 = def.radius
       const fl = def.flatten || 0;
       mesh.scale.set(def.radius, def.radius * (1 - fl), def.radius);
+      mesh.layers.enable(2);   // bloom 掩膜遮挡通道（renderPost：不透明天体写深度挡泛光）
       tiltGroup.add(mesh);
 
       if (def.clouds) {
@@ -1571,6 +1620,7 @@
           }));
         glowInner.scale.setScalar(def.radius * 2.6);
         glowInner.renderOrder = 1;
+        glowInner.layers.enable(1);   // 太阳 bloom 掩膜通道（见 renderPost）
         group.add(glowInner);
         const glowOuter = new THREE.Mesh(
           new THREE.SphereGeometry(1, 64, 32),
@@ -1580,9 +1630,12 @@
           }));
         glowOuter.scale.setScalar(def.radius * 9.0);
         glowOuter.renderOrder = 1;
+        glowOuter.layers.enable(1);
         group.add(glowOuter);
         entry.glowShell = glowInner;
         entry.glowShellOuter = glowOuter;
+        // 日面圆盘同样进入掩膜通道（bloom 源 = 屏幕上所见太阳本体 + 光晕壳）
+        mesh.layers.enable(1);
       }
 
       // 大气辉光壳（NASA Eyes 盘外光晕，壳高 = 大气层高度 1.045R）：旧行星光晕
@@ -1691,11 +1744,20 @@
 
       entry.mesh = mesh;
       entry.tiltGroup = tiltGroup;
+      // 扁椭球遮挡参数：极轴（世界系，= tiltGroup +Y）与扁率——viewOccluded 的
+      // 射线-椭球判定用（正球判定会让土星 f=0.098 的极区方向提前 ~10% 遮挡）
+      tiltGroup.quaternion.setFromEuler(tiltGroup.rotation);
+      entry.flat = fl;
+      entry.polarN = new THREE.Vector3(0, 1, 0).applyQuaternion(tiltGroup.quaternion).normalize();
       entry.group = group;
       if (!def.emissive) entry.surfMat = mat;   // 近距曝光补偿（见 updateRender 循环）
       if (!def.emissive) {
         excludeDirLight(mat);                             // 行星表面：忽略飞船平行光
-        if (entry.clouds) excludeDirLight(entry.clouds.material);
+        applySoftShoulder(mat, 'surf');                   // 高光软肩（削顶修复，仅真实光照）
+        if (entry.clouds) {
+          excludeDirLight(entry.clouds.material);
+          applySoftShoulder(entry.clouds.material, 'cloud');
+        }
       }
       scene.add(group);
 
@@ -1713,9 +1775,14 @@
           .setUsage(THREE.DynamicDrawUsage);
         og.setAttribute('color', orbitColAttr);
         const isMoon = !!entry.parent;
+        // 加色混合：轨道线是 UI 叠加层，允许叠在太阳光晕上但不允许压暗它
+        //（Normal 混合的深蓝线叠画在太阳点上会把核心「啃」成斑驳蓝灰——
+        // 用户报告的「太阳靠近土星大气突然变暗」实为漂入轨道线带，2026-10-05）；
+        // 淡出经顶点色趋向黑，加色下即自然隐没，且不会在亮环上留下暗痕。
         const om = new THREE.LineBasicMaterial({
           color: isMoon ? 0x5a7096 : 0x46587a, vertexColors: true,
           transparent: true, opacity: isMoon ? 0.58 : 0.72,
+          blending: THREE.AdditiveBlending, depthWrite: false,
         });
         const line = new THREE.LineLoop(og, om);
         line.frustumCulled = false;
@@ -1802,6 +1869,7 @@
     gFull.setAttribute('position', sharedAttr);
     trailFullLine = new THREE.Line(gFull, new THREE.LineBasicMaterial({
       color: 0x6f96c8, transparent: true, opacity: 0.34, depthWrite: false,
+      blending: THREE.AdditiveBlending,   // 同轨道线：不压暗太阳光晕（见 buildOrbit 注释）
     }));
     trailFullLine.frustumCulled = false;
     scene.add(trailFullLine);
@@ -1894,6 +1962,7 @@
         gFull.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
         const full = new THREE.Line(gFull, new THREE.LineBasicMaterial({
           color: 0x8fb0d8, transparent: true, opacity: 0, depthWrite: false,
+          blending: THREE.AdditiveBlending,   // 同轨道线：不压暗太阳光晕
         }));
         full.frustumCulled = false; full.visible = false;
         scene.add(full);
@@ -2785,13 +2854,39 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     if (len2 < 1e-12) return false;
     for (const [name, e] of registry) {
       if (name === '__sunLight' || name === skip || !e.radius) continue;
-      const bx = e.world[0] - camWorld.x,
-            by = e.world[1] - camWorld.y,
-            bz = e.world[2] - camWorld.z;
-      const t = (bx * dx + by * dy + bz * dz) / len2;   // 射线参数：0=相机 1=目标
-      if (t <= 0 || t >= 1) continue;                   // 遮挡体须位于相机与目标之间
-      const cx = bx - dx * t, cy = by - dy * t, cz = bz - dz * t;
-      if (cx * cx + cy * cy + cz * cz < e.radius * e.radius) return true;
+      const a = e.radius;
+      // —— 射线-扁椭球判定 ——
+      // 沿极轴 n 把整段射线拉伸 k=1/(1−f)（相对体心），椭球即仿射映射为
+      // 半径 a 的正球（体心不动、段参数不变）→ 在压缩空间做与旧版完全同构
+      // 的「最近点 + 段内」测试。旧版按正球（赤道半径）判定，扁率大的天体
+      // （土星 f=0.098、木星 0.065）极区方向的遮挡边界比可见椭球 limb 凸出
+      // ~10%，太阳标记贴近上下临边时提前消失——用户报告「上下提前变暗、
+      // 左右正常」（2026-10-05）。
+      let ox = camWorld.x, oy = camWorld.y, oz = camWorld.z;
+      let tx = wx, ty = wy, tz = wz;
+      const f = e.flat || 0;
+      if (f > 1e-4 && e.polarN) {
+        const k1 = f / (1 - f);            // = k − 1
+        const n = e.polarN;
+        const w0 = e.world;
+        let rx = ox - w0[0], ry = oy - w0[1], rz = oz - w0[2];
+        const s0 = (rx * n.x + ry * n.y + rz * n.z) * k1;
+        rx += s0 * n.x; ry += s0 * n.y; rz += s0 * n.z;
+        let px = tx - w0[0], py = ty - w0[1], pz = tz - w0[2];
+        const s1 = (px * n.x + py * n.y + pz * n.z) * k1;
+        px += s1 * n.x; py += s1 * n.y; pz += s1 * n.z;
+        ox = w0[0] + rx; oy = w0[1] + ry; oz = w0[2] + rz;
+        tx = w0[0] + px; ty = w0[1] + py; tz = w0[2] + pz;
+      }
+      const ddx = tx - ox, ddy = ty - oy, ddz = tz - oz;
+      const L2 = ddx * ddx + ddy * ddy + ddz * ddz;
+      if (L2 < 1e-12) continue;
+      const s = ((e.world[0] - ox) * ddx + (e.world[1] - oy) * ddy + (e.world[2] - oz) * ddz) / L2;
+      if (s <= 0 || s >= 1) continue;                   // 遮挡体须位于相机与目标之间
+      const cx = ox + ddx * s - e.world[0],
+            cy = oy + ddy * s - e.world[1],
+            cz = oz + ddz * s - e.world[2];
+      if (cx * cx + cy * cy + cz * cz < a * a) return true;
     }
     return false;
   }
@@ -3165,7 +3260,193 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     }
   }
 
+  /* —— 真实光照后处理链（item 1）：场景直绘 + 掩膜太阳 bloom ——
+   * 仅真实光照模式启用（效果类改动按约定不入普通模式，普通模式照旧直绘画布）。
+   * 链路：
+   *   scene → 画布（硬件 MSAA，与普通模式同一条零 RT 开销路径）；
+   *   太阳（盘面 + 双层光晕壳，layers 1）单独渲进半分辨率 rtSun →
+   *   （掩膜 = 遮挡预通道[层 2 不透明天体纯黑写深度] + 太阳三件套叠绘，
+   *   保证 bloom 源与画布可见性一致——行星凌掩时泛光同步消退，
+   *   详见 renderPost 步骤 2 注释）
+   *   半/四分之一/八分之一 三级「下采样 + 可分离高斯」→ 加色合成回画布。
+   *
+   * 为什么不再把整帧渲进 HDR RT：实测（WebKit，1080p）rtScene 4×MSAA 使帧率
+   * 从直绘 120fps 掉到 60fps——对数深度逐片元写 gl_FragDepth 令 MSAA 退化为
+   * 全样本着色，RT 路径又享受不到驱动对默认帧缓冲的优化；且本环境 WebKit 的
+   * RT MSAA resolve 存在间歇性产出整块零矩形的缺陷（~150px 方块、位置漂移，
+   * 300 帧命中 117 帧；关 MSAA 后 0/80 帧）——即「移动视角黑块闪烁」「太阳
+   * 突然变暗」两个目击问题的根因。掩膜方案把 bloom 对象限定为太阳：行星亮度
+   * 永不进入模糊链，向阳面不再被泛光洗白（此前的过曝主因）；太阳光晕的过曝
+   * 溢出得以保留。全屏额外开销只剩半分辨率太阳绘制 + 三级小尺寸模糊 + 一趟
+   * 加色全屏四边形，实测与直绘基本同帧率。
+   * rtSun 为 RGBA16F（无浮点渲染扩展时回退 8-bit，>1 值削顶、泛光略弱）；
+   * 盘面是内置材质，经顶部 encodings chunk 补丁在 RT 中获得与画布一致的
+   * sRGB 值（该补丁现在唯一的作用对象就是这条路径）。 */
+  const POST_BLOOM_STR = 0.55; // bloom 叠加强度
+  const POST_VS = `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = vec4( position.xy, 0.0, 1.0 ); }`;
+  // 可分离高斯（线性采样 5 tap ≈ 9 tap），uDir = 模糊方向 × 半纹素步长
+  const POST_BLUR_FS = `
+    uniform sampler2D tex; uniform vec2 uDir;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = texture2D( tex, vUv ).rgb * 0.227027;
+      vec2 o1 = uDir * 1.3846153846, o2 = uDir * 3.2307692308;
+      c += ( texture2D( tex, vUv + o1 ).rgb + texture2D( tex, vUv - o1 ).rgb ) * 0.3162162162;
+      c += ( texture2D( tex, vUv + o2 ).rgb + texture2D( tex, vUv - o2 ).rgb ) * 0.0702702703;
+      gl_FragColor = vec4( c, 1.0 );
+    }`;
+  // 下采样：双线性 2×2 盒滤（源纹理本就是模糊后的低频内容，够用）
+  const POST_COPY_FS = `
+    uniform sampler2D tex; uniform vec2 uTexel;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = texture2D( tex, vUv + uTexel * vec2( -0.5, -0.5 ) ).rgb
+             + texture2D( tex, vUv + uTexel * vec2(  0.5, -0.5 ) ).rgb
+             + texture2D( tex, vUv + uTexel * vec2( -0.5,  0.5 ) ).rgb
+             + texture2D( tex, vUv + uTexel * vec2(  0.5,  0.5 ) ).rgb;
+      gl_FragColor = vec4( c * 0.25, 1.0 );
+    }`;
+  // 合成：三级 bloom 加权后**加色**叠回画布（画布上已绘好场景本体，禁用清屏）。
+  // 无软肩/无场景采样——>1 值保持原有硬削顶语义，太阳白核外观与 item 1 之前一致
+  const POST_COMP_FS = `
+    uniform sampler2D b1; uniform sampler2D b2; uniform sampler2D b3;
+    uniform float uStr;
+    varying vec2 vUv;
+    void main() {
+      vec3 bloom = texture2D( b1, vUv ).rgb * 0.5
+                 + texture2D( b2, vUv ).rgb * 0.3
+                 + texture2D( b3, vUv ).rgb * 0.2;
+      gl_FragColor = vec4( bloom * uStr, 1.0 );
+    }`;
+
+  let post = null;   // 惰性创建（首次真实光照渲染时），null = 未初始化
+  const _postSize = new THREE.Vector2();
+
+  function ensurePost() {
+    if (post) return;
+    const size = renderer.getDrawingBufferSize(_postSize);
+    // rtSun 需浮点渲染扩展（RGBA16F 可写）；否则 8-bit 回退
+    let hdr = false;
+    if (renderer.capabilities.isWebGL2) {
+      try { hdr = !!renderer.extensions.get('EXT_color_buffer_float'); } catch (e) { hdr = false; }
+    }
+    // 一律不开 MSAA：模糊源无需抗锯齿，且 RT MSAA resolve 在 WebKit 下有零块缺陷
+    const mkRT = (w, h, depth) => new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
+      minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: hdr ? THREE.HalfFloatType : THREE.UnsignedByteType,
+      depthBuffer: depth, stencilBuffer: false,
+    });
+    const w = size.x, h = size.y;
+    const P = {
+      hdr,
+      rtSun: mkRT(w >> 1, h >> 1, true),   // 深度：掩膜期壳已关深度测试（见 renderPost），保留日面自身深度路径
+      rtHalfB: mkRT(w >> 1, h >> 1, false),
+      rtQuaA: mkRT(w >> 2, h >> 2, false), rtQuaB: mkRT(w >> 2, h >> 2, false),
+      rtEigA: mkRT(w >> 3, h >> 3, false), rtEigB: mkRT(w >> 3, h >> 3, false),
+      quadScene: new THREE.Scene(),
+      quadCam: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1),
+    };
+    P.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
+    P.quad.frustumCulled = false;
+    P.quadScene.add(P.quad);
+    const mkMat = (fs, uniforms) => new THREE.ShaderMaterial({
+      vertexShader: POST_VS, fragmentShader: fs, uniforms,
+      depthTest: false, depthWrite: false,
+    });
+    P.matBlur = mkMat(POST_BLUR_FS, { tex: { value: null }, uDir: { value: new THREE.Vector2() } });
+    P.matCopy = mkMat(POST_COPY_FS, { tex: { value: null }, uTexel: { value: new THREE.Vector2() } });
+    P.matComp = mkMat(POST_COMP_FS, {
+      b1: { value: null }, b2: { value: null }, b3: { value: null },
+      uStr: { value: POST_BLOOM_STR },
+    });
+    P.matComp.blending = THREE.AdditiveBlending;
+    P.matComp.transparent = true;
+    // 遮挡预通道材质（层 2 天体 → 纯黑 + 写深度；见 renderPost 步骤 2a）
+    P.blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    post = P;
+  }
+
+  function resizePost() {
+    if (!post) return;
+    const size = renderer.getDrawingBufferSize(_postSize);
+    const w = size.x, h = size.y;
+    post.rtSun.setSize(w >> 1, h >> 1);
+    post.rtHalfB.setSize(w >> 1, h >> 1);
+    post.rtQuaA.setSize(w >> 2, h >> 2); post.rtQuaB.setSize(w >> 2, h >> 2);
+    post.rtEigA.setSize(w >> 3, h >> 3); post.rtEigB.setSize(w >> 3, h >> 3);
+  }
+
+  /* 一趟全屏四边形 pass：换材质/uniform → 换目标 → 绘制 */
+  function postPass(mat, target) {
+    post.quad.material = mat;
+    renderer.setRenderTarget(target);
+    renderer.render(post.quadScene, post.quadCam);
+  }
+
+  function renderPost() {
+    ensurePost();
+    const P = post;
+    // drawing buffer 尺寸漂移兜底（如嵌入式内核改背衬缩放而不派发 resize 事件）
+    const size = renderer.getDrawingBufferSize(_postSize);
+    if (P.rtSun.width !== (size.x >> 1) || P.rtSun.height !== (size.y >> 1)) resizePost();
+    // 1) 场景直绘画布：硬件 MSAA，与普通模式同路径（无 RT、无 resolve 开销）
+    renderer.setRenderTarget(null);
+    renderer.render(scene, camera);
+    // 2) 太阳掩膜 → 半分辨率 RT，与画布可见性保持一致：
+    //    2a) 遮挡预通道：层 2（全部不透明天体）以纯黑材质渲入 rtSun——本趟
+    //        renderer.render 的 autoClear 完成清屏（颜色+深度，不依赖手动 clear，
+    //        规避 WebKit 的 RT 深度路径缺陷），天体深度留档作遮挡判据；
+    //    2b) 太阳三件套（层 1）在 autoClear=false 下叠绘：盘面与光晕壳均开
+    //        深度测试 → 被行星凌掩的部分不进 bloom 源（太阳沉入土星 limb 时
+    //        泛光随几何同步消退、地球可正常挡住泛光——2026-10-05 用户反馈）。
+    //        壳心亮核被日面深度挡掉与画布语义一致；显式清屏后 WebKit 实测
+    //        （Playwright WebKit）壳完整渲染，早前的掩膜暗缺陷不再复现。
+    camera.layers.set(2);
+    scene.overrideMaterial = P.blackMat;
+    renderer.setRenderTarget(P.rtSun);
+    renderer.render(scene, camera);
+    scene.overrideMaterial = null;
+    camera.layers.set(1);
+    renderer.autoClear = false;
+    renderer.render(scene, camera);
+    renderer.autoClear = true;
+    camera.layers.set(0);
+    // 3) 三级「下采样 + H/V 高斯」：半 → 四分之一 → 八分之一，晕径逐级翻倍
+    // H/V 往返写回同一张 A 纹（B 仅作中间），三级各自独立
+    const blurHV = (a, b, w, h) => {
+      P.matBlur.uniforms.tex.value = a.texture;
+      P.matBlur.uniforms.uDir.value.set(1.5 / w, 0);
+      postPass(P.matBlur, b);
+      P.matBlur.uniforms.tex.value = b.texture;
+      P.matBlur.uniforms.uDir.value.set(0, 1.5 / h);
+      postPass(P.matBlur, a);
+    };
+    blurHV(P.rtSun, P.rtHalfB, P.rtSun.width, P.rtSun.height);
+    P.matCopy.uniforms.tex.value = P.rtSun.texture;
+    P.matCopy.uniforms.uTexel.value.set(0.5 / P.rtSun.width, 0.5 / P.rtSun.height);
+    postPass(P.matCopy, P.rtQuaA);
+    blurHV(P.rtQuaA, P.rtQuaB, P.rtQuaA.width, P.rtQuaA.height);
+    P.matCopy.uniforms.tex.value = P.rtQuaA.texture;
+    P.matCopy.uniforms.uTexel.value.set(0.5 / P.rtQuaA.width, 0.5 / P.rtQuaA.height);
+    postPass(P.matCopy, P.rtEigA);
+    blurHV(P.rtEigA, P.rtEigB, P.rtEigA.width, P.rtEigA.height);
+    // 4) bloom 加色合成回画布（场景已在步骤 1 绘好，禁清屏避免抹掉场景）
+    P.matComp.uniforms.b1.value = P.rtSun.texture;
+    P.matComp.uniforms.b2.value = P.rtQuaA.texture;
+    P.matComp.uniforms.b3.value = P.rtEigA.texture;
+    renderer.autoClear = false;
+    postPass(P.matComp, null);
+    renderer.autoClear = true;
+  }
+
   function render() {
+    // __forceDirect：调试/逃生开关——真实光照下绕过后处理链直接绘原画布
+    //（对比 RT 链路与直绘的逐位一致性；亦供低端机出问题时手动关闭后处理）
+    if (realisticOn && !window.__forceDirect) { renderPost(); return; }
+    renderer.setRenderTarget(null);
     renderer.render(scene, camera);
   }
 
@@ -3330,6 +3611,7 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     get soiState() { return soiState; },
     get attitudeState() { return ATT_LBL[attMode] || ATT_LBL.earth; },
     get shineDebug() { return shineDebug; },   // 行星反照光逐帧状态（调试）
+    get postDebug() { return post; },          // 后处理链状态（调试：hdr/rtSun/uniforms）
     setCameraWorld(v) { camWorld.x = v[0]; camWorld.y = v[1]; camWorld.z = v[2]; },
     camWorld,
     cassiniPosAt,
