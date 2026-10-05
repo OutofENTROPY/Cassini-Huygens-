@@ -1081,6 +1081,10 @@
         // 天体（泰坦）光晕更厚更饱和，壳缘窗口仍归零
         uK1: { value: 200.0 / (opt.spread || 1) },
         uK2: { value: 70.0 / (opt.spread || 1) },
+        // 近侧环遮挡衰减（有环行星接线，见 buildBodies；无环 uRingOut=-1 恒不命中）
+        uRingMap: { value: BLACK_TEX },
+        uRingIn: { value: 1.0 },
+        uRingOut: { value: -1.0 },
       },
       vertexShader: `
         varying vec3 vW; varying vec3 vBodyC;
@@ -1096,6 +1100,7 @@
         uniform float uR; uniform float uI; uniform vec3 uColor;
         uniform float uEdge; uniform float uFlat; uniform vec3 uPolar;
         uniform vec3 uSunPos; uniform float uK1; uniform float uK2;
+        uniform sampler2D uRingMap; uniform float uRingIn; uniform float uRingOut;
         varying vec3 vW; varying vec3 vBodyC;
         #include <common>
         #include <logdepthbuf_pars_fragment>
@@ -1157,7 +1162,32 @@
           // 盘缘指向盘心）——昼侧亮弧必须落在太阳一侧。场景为相机相对系，
           // 太阳位姿逐帧注入；散射有 wrap（夜侧留 0.42 底），避免晨昏断崖
           float day = clamp(-dot(nrm, normalize(uSunPos - vBodyC)) * 1.1 + 0.42, 0.0, 1.0);
-          gl_FragColor = vec4(uColor * max(g * day, 0.0), 1.0);
+          // 近侧环按真实 alpha 衰减辉光：环物质（内缘 ≥1.11R）恒在壳（1.045R）
+          // 之外，逐视线顺序必为【近侧环 → 大气弦 → 远侧环】——环平面穿越点
+          // 参数 tR 落在壳远壁 tX 之前即近侧环，采样环径向 alpha 乘 (1−α)；
+          // 远侧环不衰减（亮弧本就霾罩其上）。环平面法线复用 uPolar（行星
+          // 赤道面法线，与环面同）。旧的「环写深度 + 壳按深度剔除」机制下
+          // 深度是二值的——透明环片段（卡西尼缝、木星环稀疏尘埃）也会把亮弧
+          // 整段剔黑，故改为解析衰减：α=0 无影响、半透明按比例透光
+          float ringTrans = 1.0;
+          float denomR = dot(D, uPolar);
+          if (abs(denomR) > 1e-6) {
+            float tR = dot(vBodyC - cameraPosition, uPolar) / denomR;
+            vec3 occ = cameraPosition - vBodyC;
+            float bD = dot(occ, D);
+            float shellR = uR * uEdge;
+            float disc = bD * bD - (dot(occ, occ) - shellR * shellR);
+            // 壳远壁（取 +sqrt：内视坠入时近壁在身后，穿越点仍正确遮挡）
+            float tX = disc > 0.0 ? -bD + sqrt(disc) : -1.0;
+            if (tR > 0.0 && tR < tX) {
+              float rr = length(cameraPosition + D * tR - vBodyC);
+              if (rr > uRingIn && rr < uRingOut) {
+                float uu = (rr - uRingIn) / (uRingOut - uRingIn);
+                ringTrans = 1.0 - texture2D(uRingMap, vec2(uu, 0.5)).a;
+              }
+            }
+          }
+          gl_FragColor = vec4(uColor * max(g * day, 0.0) * ringTrans, 1.0);
         }`,
       side: THREE.BackSide,
       transparent: true,
@@ -1344,13 +1374,11 @@
     }
     const rm = new THREE.MeshLambertMaterial({
       map: rt, side: THREE.DoubleSide, transparent: true,
-      // depthWrite 必须开：环物质（内缘 ≥1.11R）恒在大气辉光壳（1.045R）之外，
-      // 逐视线顺序必为【近侧环 → 大气弦 → 远侧环】。辉光壳后绘（renderOrder 1）
-      // 并按深度剔除被环挡住的弧段——近侧环遮住大气亮弧、远侧环被霾罩，两端
-      // 同时正确；关深度则 painter 序只能二选一（环叠亮弧 / 亮弧叠印环面）。
-      // 代价：半透明环像素写整深度，后绘轨迹线/标记在半透明环后被硬遮——
-      // 不透明环段本就该挡住背后物体，比旧「全透见」更接近真实
-      depthWrite: true, alphaTest: 0.01,
+      // depthWrite 必须关：深度是二值的，透明环片段（卡西尼缝等 alpha≈0 处）
+      // 也写深度，后绘的大气辉光壳被整体剔除，在亮弧上切出黑缝（木星/土星
+      // 近拱截图可见）。环-大气层级改由辉光壳着色器按近侧环真实 alpha 解析
+      // 衰减（见 atmoHaloShellMaterial）——半透明按比例透光、全透明不影响
+      depthWrite: false, alphaTest: 0.01,
     });
     rm.userData.uniforms = {
       uSunPos: { value: new THREE.Vector3() },
@@ -1573,13 +1601,11 @@
             polar: new THREE.Vector3(0, 1, 0).applyQuaternion(tiltGroup.quaternion).normalize(),
           }));
         halo.scale.set(def.radius * shell, def.radius * shell * (1 - fl), def.radius * shell);
-        // 渲染顺序置于环（renderOrder 0，写深度）之后、标记（3+）之前：
-        // 环物质恒在壳外（环内缘 ≥1.11R > 壳 1.045R），逐视线顺序必为
-        // 【近侧环 → 大气弦 → 远侧环】。旧序（壳 -1 先绘） painter 序只能
-        // 保一头：远侧环会 alpha 叠印在大气亮弧上方（环显示在大气上）。
-        // 壳改后绘 + 环写深度 → 近侧环按深度遮住亮弧、远侧环被霾罩，两端
-        // 同时正确；盘内弧段仍由行星不透明深度剔除，坠入段内视（BackSide
-        // 远半球内表面）不受影响
+        // 渲染顺序置于环（renderOrder 0）之后、标记（3+）之前：亮弧加色叠印
+        // 在远侧环上（霾罩），近侧环的遮挡不靠深度——由着色器按视线近侧环
+        // 穿越点的真实 alpha 衰减（见 fragmentShader 内 ringTrans 注释），
+        // 透明环片段不再剔黑大气。盘内弧段仍由行星不透明深度剔除，坠入段内
+        // 视（BackSide 远半球内表面）不受影响
         halo.renderOrder = 1;
         tiltGroup.add(halo);
         entry.haloShell = halo;
@@ -1588,6 +1614,15 @@
       // —— 行星环系统（item 4：木/土/天/海四颗气态行星，真实半径与真实透明度）——
       const rdef = RINGS[def.name];
       if (rdef) buildRingSystem(entry, tiltGroup, def, rdef, aniso);
+
+      // 辉光壳接环纹理：近侧环遮挡衰减需要环径向 alpha（u=0 内缘，与环材质
+      // 和盘面环影同映射）；无环行星保持 uRingOut=-1 恒不命中
+      if (entry.haloShell && entry.ringTexture) {
+        const hu = entry.haloShell.material.uniforms;
+        hu.uRingMap.value = entry.ringTexture;
+        hu.uRingIn.value = rdef.inner;
+        hu.uRingOut.value = rdef.outer;
+      }
 
       if (def.name === 'saturn' && entry.ringTexture) {
         // 盘面环影（采样真实环 alpha）；环面法线 = tiltGroup +Y。
