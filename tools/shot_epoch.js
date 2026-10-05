@@ -5,7 +5,7 @@
 const http = require('http'); const fs = require('fs'); const path = require('path');
 const { chromium } = require('playwright-core');
 const ROOT = 'D:/Programming/HTML/Cassini';
-const OUT = path.join(ROOT,'tools/shots');
+const OUT = path.join(ROOT,'.workbuddy/shots');
 const MIME = { '.html':'text/html;charset=utf-8','.js':'text/javascript;charset=utf-8','.css':'text/css','.png':'image/png','.jpg':'image/jpeg','.glb':'model/gltf-binary','.wasm':'application/wasm','.json':'application/json' };
 const srv = http.createServer((req,res)=>{ let r=decodeURIComponent(req.url.split('?')[0]); if(r==='/')r='/index.html'; const fp=path.join(ROOT,r); fs.readFile(fp,(e,b)=>{ if(e){res.writeHead(404);return res.end();} res.writeHead(200,{'Content-Type':MIME[path.extname(fp).toLowerCase()]||'application/octet-stream'}); res.end(b);});});
 const WHEN=process.argv[2]||'1997-10-15T09:26:00Z';

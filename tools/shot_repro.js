@@ -4,7 +4,7 @@
  * 用法：node shot_repro.js [outPng]
  */
 const { chromium } = require('playwright-core');
-const OUT = process.argv[2] || 'D:/Programming/HTML/Cassini/tools/shots/repro_1140.png';
+const OUT = process.argv[2] || 'D:/Programming/HTML/Cassini/.workbuddy/shots/repro_1140.png';
 
 (async () => {
   const browser = await chromium.launch({

@@ -47,8 +47,7 @@ python tools/fetch_attitude.py     # 下载真实姿态四元数（eyes.nasa.gov
 python tools/bake_attitude.py      # 抽稀+校验 → data/attitude_data.js
 
 # 模型 / 贴图 / 星表
-powershell tools/fetch_models.ps1  # 下载 NASA Eyes 官方 Cassini 模型
-python tools/build_models.py       # 打包为自包含 GLB → data/models.js
+python tools/build_models.py       # NASA Eyes 官方 Cassini 模型 → 打包为自包含 GLB → data/models.js
 python tools/build_textures.py     # 行星贴图 → data/textures.js
 python tools/build_stars.py        # 星表 + 银河带 → data/stars.js
 
@@ -56,4 +55,4 @@ python tools/build_stars.py        # 星表 + 银河带 → data/stars.js
 python tools/split_data.py         # cassini/moons → *.pNN.js 分片 + *.asm.js 装配
 ```
 
-校验脚本见 `tools/`（含 `verify_frontend_data.js` 等），报告见 `tools/XCHECK_REPORT.md`、`tools/FLYBY_FIX_REPORT.md`。
+校验脚本见 `tools/`（含 `verify_frontend_data.js` 等）。
