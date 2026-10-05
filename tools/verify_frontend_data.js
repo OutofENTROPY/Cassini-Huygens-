@@ -23,11 +23,27 @@ const vm = require('vm');
 const ROOT = path.resolve(__dirname, '..');
 const ctx = { window: {}, atob: b64 => Buffer.from(b64, 'base64').toString('binary') };
 vm.createContext(ctx);
-for (const f of ['cassini_data.js', 'moons_data.js']) {
-  const p = path.join(ROOT, 'data', f);
-  if (!fs.existsSync(p)) { console.error('MISSING ' + p); process.exit(2); }
-  vm.runInContext(fs.readFileSync(p, 'utf8'), ctx, { filename: p });
+// 数据文件现为分片布局（split_data.py 产物）：<base>.pNN.js 填 window.__DP，
+// <base>.asm.js 消费 __DP 装配出 window.<VAR>。单文件 <base>.js 存在时兼容直载。
+for (const [base, varName] of [['cassini_data', 'CASSINI_DATA'], ['moons_data', 'MOONS_DATA']]) {
+  const mono = path.join(ROOT, 'data', base + '.js');
+  if (fs.existsSync(mono)) {
+    vm.runInContext(fs.readFileSync(mono, 'utf8'), ctx, { filename: mono });
+    continue;
+  }
+  const asm = path.join(ROOT, 'data', base + '.asm.js');
+  if (!fs.existsSync(asm)) { console.error('MISSING ' + mono + '（及分片装配脚本 ' + asm + '）'); process.exit(2); }
+  ctx.window.__DP = {};
+  const shards = fs.readdirSync(path.join(ROOT, 'data'))
+    .filter(f => f.startsWith(base + '.p') && f.endsWith('.js')).sort();
+  for (const f of shards) {
+    const p = path.join(ROOT, 'data', f);
+    vm.runInContext(fs.readFileSync(p, 'utf8'), ctx, { filename: p });
+  }
+  vm.runInContext(fs.readFileSync(asm, 'utf8'), ctx, { filename: asm });
+  if (!ctx.window[varName]) { console.error('分片装配失败：window.' + varName + ' 未挂载'); process.exit(2); }
 }
+delete ctx.window.__DP;
 const CD = ctx.window.CASSINI_DATA;
 const MD = ctx.window.MOONS_DATA;
 

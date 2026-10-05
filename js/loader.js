@@ -20,8 +20,8 @@
   /* ---------- 资源清单（执行顺序 = 原index.html脚本顺序，勿乱） ---------- */
   var V = {
     three: '2026094', gltf: '2026103', tex: '2026401', stars: '2026094',
-    cassini: '2026104', moons: '2026104', attitude: '2026301', models: '2026303',
-    events: '2026404', jtex: '2026103', huygens: '20261004c', cmodel: '2026305',
+    cassini: '2026105', moons: '2026105', attitude: '2026301', models: '2026303',
+    events: '2026405', jtex: '2026103', huygens: '20261004c', cmodel: '2026305',
     scene: '20261005h', camera: '20261004a', timeline: '20261004c', main: '20261004e',
   };
   var MANIFEST = [
@@ -35,7 +35,7 @@
     ['data/cassini_data.p03.js?v=' + V.cassini + 'p3', 'orbit', 3436746],
     ['data/cassini_data.p04.js?v=' + V.cassini + 'p4', 'orbit', 4000166],
     ['data/cassini_data.p05.js?v=' + V.cassini + 'p5', 'orbit', 2606406],
-    ['data/cassini_data.asm.js?v=' + V.cassini + 'a', 'orbit', 5733877],
+    ['data/cassini_data.asm.js?v=' + V.cassini + 'a', 'orbit', 5734485],
     ['data/moons_data.p00.js?v=' + V.moons + 'm0', 'orbit', 4000152],
     ['data/moons_data.p01.js?v=' + V.moons + 'm1', 'orbit', 190600],
     ['data/moons_data.p02.js?v=' + V.moons + 'm2', 'orbit', 4000148],

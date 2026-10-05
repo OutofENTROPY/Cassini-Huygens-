@@ -752,7 +752,10 @@ def bake_moons(t0u, t1u):
 
 
 def moon_at(raw_m, t):
-    """与前端 makeTrack CR 逐位一致（f32 顶点 + f64 算术）"""
+    """与前端 makeTrack CR 逐位一致（f32 顶点 + f64 算术）。
+    注意：numpy ≥2 (NEP 50) 下 f32 标量参与运算不自动升 f64——顶点必须先
+    float() 提升，否则中间减法 (a2-a0) 等落在 f32，与 moon_at_vec 差 ~0.2 km
+    （titan 实测 0.17 km，validate_vec 断言失败的根因）。"""
     t0, step, pts = raw_m
     n = len(pts)
     f = (t - t0) / step
@@ -767,7 +770,7 @@ def moon_at(raw_m, t):
     p0, p1, p2, p3 = pts[i0], pts[i], pts[i + 1], pts[i3]
     out = []
     for k in range(3):
-        a0, a1, a2, a3 = p0[k], p1[k], p2[k], p3[k]
+        a0, a1, a2, a3 = float(p0[k]), float(p1[k]), float(p2[k]), float(p3[k])
         out.append(0.5 * ((2.0 * a1) + (a2 - a0) * s
                           + (2.0 * a0 - 5.0 * a1 + 4.0 * a2 - a3) * s * s
                           + (3.0 * a1 - a0 - 3.0 * a2 + a3) * s * s * s))
@@ -1174,7 +1177,9 @@ def bake_cassini_trail(ts, te, moons_raw, soi_wins, enc_windows):
 # ---------- 土卫 SOI 穿越窗口（二级相对轨迹显示窗） ----------
 
 def moon_at_vec(raw_m, ts_arr):
-    """moon_at 的向量化版：ts_arr (n,) → (n,3)。与前端 makeTrack CR 逐位同式。"""
+    """moon_at 的向量化版：ts_arr (n,) → (n,3)。与前端 makeTrack CR 逐位同式。
+    顶点 gather 后必须升 f64（f32 网格上 (p2-p0) 等中间量在 NEP 50 下停留
+    f32，与逐点版差 ~0.2 km——见 moon_at 注释）。"""
     t0, step, pts = raw_m
     n = len(pts)
     f = (ts_arr - t0) / step
@@ -1183,7 +1188,10 @@ def moon_at_vec(raw_m, ts_arr):
     s = f - i
     i0 = np.maximum(i - 1, 0)
     i3 = np.minimum(i + 2, n - 1)
-    p0, p1, p2, p3 = pts[i0], pts[i], pts[i + 1], pts[i3]
+    p0 = pts[i0].astype(np.float64)
+    p1 = pts[i].astype(np.float64)
+    p2 = pts[i + 1].astype(np.float64)
+    p3 = pts[i3].astype(np.float64)
     s2 = s * s
     s3 = s2 * s
     # 0.5*((2a1) + (a2-a0)s + (2a0-5a1+4a2-a3)s^2 + (3a1-a0-3a2+a3)s^3)
@@ -1635,9 +1643,28 @@ def bake_planets2(t0s=None, t1s=None):
         # 本项目行星历表仅由 Cassini -82 ops 内核（1997-10-15 起）提供，
         # t0e 比 t0p（1997-06-01）晚 136.4 天——若写 t0p 会使整条行星轨迹
         # 相对飞船轨迹错位 136.4 天（飞掠时刻行星不在飞船处）。
+        # 尾段：均匀网格末样本 t_last = t0e+(n-1)·step 早于域终点 t1e（土星段
+        # -82 内核终点 2017-09-15T10:32:50.8 比日网格末样本晚 1.18 h）。若不加
+        # 尾段，前端 track 求值在末样本后钳制 → 最后 1.18 h 行星（及锚定其上的
+        # marker/模型/尾线）冻结，而 SPICE 里土星自身位移 37,793 km（0.65 R_s）
+        # ——Grand Finale 末段轨迹（日心真值，不受影响）看起来"坠不进"行星：
+        # 错位的是行星而非轨迹。追加 n=2 短段 [t_last, t1e] 补齐。
+        segs_in = [(t0e, step, pts32)]
+        t_last = t0e + (n - 1) * step
+        tail_dt = t1e - t_last
+        if tail_dt > 60.0:
+            if name in PLANET_SPICE:
+                st = state(tgt, "SUN", float(t1e))
+                p_end = np.asarray(eq_to_ecl((st[0], st[1], st[2])))
+                if name == "saturn":
+                    p_end = p_end + SB.offset(float(t1e))
+            else:
+                p_end = np.asarray(mb.pos(float(t1e)))
+            segs_in.append((float(t_last), float(tail_dt),
+                            np.asarray([pts[-1], p_end], dtype="<f4")))
         bodies[name] = {
             "radiusKm": RADII[name],
-            "segs": pack([(t0e, step, pts32)]),
+            "segs": pack(segs_in),
             "o": orb,
             "elems": elems,
         }
