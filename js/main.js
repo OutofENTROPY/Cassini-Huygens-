@@ -435,8 +435,10 @@
     }
     const { cassWorld } = scene.updatePositions(t);
     bodyWorldCache.cassini = cassWorld;
-    // Huygens 当前帧位置（分离前挂载于组合体，退回 Cassini 位置；视角跟随 item 4）
-    bodyWorldCache.huygens = (window.HuygensVis && window.HuygensVis.tryWorldAt(t)) || cassWorld;
+    // Huygens 当前帧位置（分离前挂载于组合体，退回 Cassini 位置；视角跟随 item 4）。
+    // 聚焦目标取模型视觉中心（包围盒质心）而非 GLB 挂点：探测器几何相对挂点
+    // 自带 ~1.8 m 偏置，特写视距下按挂点聚焦镜头对不准模型
+    bodyWorldCache.huygens = (window.HuygensVis && window.HuygensVis.tryFocusWorldAt(t)) || cassWorld;
     cam.update(now, bodyWorldCache, cassWorld, scene);
     scene.updateRender(t);
     scene.updateLabels(cassWorld);

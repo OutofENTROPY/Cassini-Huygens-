@@ -539,8 +539,23 @@ window.HuygensVis = (function () {
     try { return worldAt(t); } catch (e) { return null; }
   }
 
+  /* 相机聚焦目标 = 模型视觉中心（包围盒质心）而非 wrap 原点：wrap 原点 = GLB
+     挂点，探测器几何相对挂点自带 ~1.8 m 偏置（质心 (0.2, −1404.7, −1114.6) mm，
+     见 init 处实测注释），1 m 级特写视距下按挂点聚焦镜头会明显偏离模型。
+     自旋补偿已保证质心在 wrap 系中不动，故质心世界位置 = worldAt(t) +
+     R_baseQ·centroidLocal，baseQ 与 update 的模型姿态同源（分离前 = 当前组合体
+     姿态，分离后 = 分离瞬间快照 sepQuat）。 */
+  function tryFocusWorldAt(t) {
+    const p = tryWorldAt(t);
+    if (!p || !centroidLocal) return p;
+    const q = (t < SEP_ET) ? modelQuat : (sepQuat || modelQuat);
+    if (!q) return p;
+    const off = _mountTmp.copy(centroidLocal).applyQuaternion(q);
+    return [p[0] + off.x, p[1] + off.y, p[2] + off.z];
+  }
+
   return {
-    init, update, getWorld, tryWorldAt, SEP_ET, ENTRY_ET, TD_ET, LOS_ET,
+    init, update, getWorld, tryWorldAt, tryFocusWorldAt, SEP_ET, ENTRY_ET, TD_ET, LOS_ET,
     get modelFade() { return selfFade; },   // 本机模型级淡出因子（scene.js 联动读取）
   };
 })();
