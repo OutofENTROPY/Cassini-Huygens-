@@ -988,14 +988,14 @@
    * 都是一圈均匀晕环，不存在旧版角向冕流造成的明暗扇区。
    *
    * 剖面为「日缘锚定的指数和」（s = b−1，日缘外距离），衰减全程指数：
-   *   inner（2.6R 壳）——色球亮环 0.95·exp(−10s) + 内冕 0.40·exp(−3.2s)：
-   *     白核（叠加值 >1 的饱和区）在 s≈0.07R 内就降到 1 以下 → 亮球与光球层
-   *     同大，不再出现旧版白核外扩到 2.1R 的「内部亮球」；
-   *   outer（7R 壳）——外冕 0.20·exp(−s/2)：单一长指数，柔和弥散到 ~6R。
+   *   inner（2.6R 壳）——色球亮环 1.15·exp(−9s) + 内冕 0.55·exp(−2.6s)：
+   *     白核（叠加值 >1 的饱和区）在 s≈0.13R 内就降到 1 以下 → 亮球与光球层
+   *     基本同大，不出现旧版白核外扩到 2.1R 的「内部亮球」；
+   *   outer（9R 壳）——外冕 0.30·exp(−s·0.38)：单一长指数，柔和弥散到 ~8R。
    *
    * 幅度标定在**原始帧缓冲空间**：ShaderMaterial 无 encodings_fragment（输出
    * 不做线性→sRGB 换算），叠加结果即屏幕值，饱和阈值为 1.0。日缘总量
-   * 1.35+0.20=1.55 → 贴缘一圈白环；s=0.08 处已 <1 → 白核≈日面。
+   * 1.70+0.30=2.00 → 贴缘一圈明显的白环；s≈0.13 处已 <1 → 白核≈日面。
    * 指数在两壳壳缘处已衰减到 ~1e-2 以下，win 窗口（1−x⁶）只负责最后归零，
    * 无同心接缝；旧版幂律 x^-1.5 在 7R 壳内衰减慢、观感近似线性渐变，已弃用。
    * 含 logdepthbuf chunk：与对数深度缓冲的圆盘/行星正确做深度判定。 */
@@ -1003,12 +1003,12 @@
     const profile = opt.mode === 'outer'
       ? `float x = clamp(b / uEdge, 0.0, 1.0);
          float s = max(b - 1.0, 0.0);
-         // 外冕：单一长指数（τ=2R），柔和弥散
-         float g = 0.20 * exp(-s * 0.5);`
+         // 外冕：单一长指数（τ≈2.6R），柔和弥散
+         float g = 0.30 * exp(-s * 0.38);`
       : `float x = clamp(b / uEdge, 0.0, 1.0);
          float s = max(b - 1.0, 0.0);
-         // 色球亮环（τ=0.1R，白核止于日缘）+ 内冕（τ≈0.31R）
-         float g = 0.95 * exp(-s * 10.0) + 0.40 * exp(-s * 3.2);`;
+         // 色球亮环（τ≈0.11R，白核止于日缘附近）+ 内冕（τ≈0.38R）
+         float g = 1.15 * exp(-s * 9.0) + 0.55 * exp(-s * 2.6);`;
     return new THREE.ShaderMaterial({
       uniforms: {
         uR: { value: opt.rSun },
@@ -1425,8 +1425,8 @@
       let mat;
       if (def.emissive) {
         mat = new THREE.MeshBasicMaterial({ map: tex });
-        // 贴图本身即目标亮度（亮黄盘面），颜色乘子仅轻微提亮中心
-        mat.color.setRGB(1.10, 1.06, 1.0);
+        // 贴图亮度基础上整体提亮（>1 乘子压向饱和，亮黄盘面→炽白黄）
+        mat.color.setRGB(1.45, 1.32, 1.05);
         if (def.name === 'sun') {
           // 盘缘增亮（参考图日缘偏白）：菲涅尔项注入，几何平滑无环状边界
           mat.onBeforeCompile = (shader) => {
@@ -1445,7 +1445,7 @@
                 #include <dithering_fragment>
                 {
                   float sunFres = pow(1.0 - clamp(dot(normalize(vSunN), normalize(vSunV)), 0.0, 1.0), 3.0);
-                  gl_FragColor.rgb += vec3(0.55, 0.46, 0.22) * sunFres;
+                  gl_FragColor.rgb += vec3(0.75, 0.64, 0.34) * sunFres;
                 }`);
           };
         }
@@ -1490,7 +1490,7 @@
 
       if (def.name === 'sun') {
         // 双层光晕壳：内壳 = 色球/内冕均匀亮晕（2.6R，盘缘增亮在日面材质内做）；
-        // 外壳 = 外冕弥散长晕（7R）。剖面严格各向同性（只随瞄准距离 b 变化），
+        // 外壳 = 外冕弥散长晕（9R）。剖面严格各向同性（只随瞄准距离 b 变化），
         // 壳缘窗口只做最后归零 → 各视距下均匀晕环，无角向明暗扇区与同心接缝；
         // 相机临近时 uFade 淡出（阈值见逐帧更新，随各自壳半径）
         const glowInner = new THREE.Mesh(
@@ -1505,10 +1505,10 @@
         const glowOuter = new THREE.Mesh(
           new THREE.SphereGeometry(1, 64, 32),
           sunGlowShellMaterial({
-            rSun: def.radius, mode: 'outer', shell: 7.0,
+            rSun: def.radius, mode: 'outer', shell: 9.0,
             intensity: 1.0, color: 0xfff6d8, side: THREE.BackSide,
           }));
-        glowOuter.scale.setScalar(def.radius * 7.0);
+        glowOuter.scale.setScalar(def.radius * 9.0);
         glowOuter.renderOrder = 1;
         group.add(glowOuter);
         entry.glowShell = glowInner;
@@ -2328,9 +2328,8 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
       }
       if (entry.glowShell) {
         // 相机进入光晕壳内时淡出，避免暖纱遮蔽星空（内外壳阈值随各自壳半径：
-        // 内壳 2.6R 在 1.5R 起淡（原值即为此，壳半径未变故不动）；外壳 7R 的
-        // 原阈值 (d/r-2.4)/4.6 → 2.4R 起淡、7.0R 才满亮，而旧壳缘正是 7.0R，
-        // 导致 2.6~7R 区间外套色被误压暗，现改到 1.9R 起淡）
+        // 内壳 2.6R 在 1.5R 起淡（原值即为此，壳半径未变故不动）；外壳 9R 的
+        // 阈值 (d/r-1.9)/3.0 → 1.9R 起淡、4.9R 满亮，外冕长晕在中等视距即全亮）
         const r = entry.radius;
         entry.glowShell.material.uniforms.uFade.value =
           Math.min(1, Math.max(0, (d / r - 1.5) / 1.1));
