@@ -2287,13 +2287,26 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     // 阴影锥（自阴影消失）。故除时刻变化外，光源相对位置变化（= 相机
     // 移动，阈值 1 cm，滤除数值抖动）也须重绘；视角静止时维持零重绘。
     // 模型不可见（屏占 <1.1px）或真实光照关闭时整条阴影管线休眠，零额外开销。
+    // 锚点跟随可见者：阴影正交锥仅 ±14 m，只覆盖锚定体周边。探测器材质同样
+    // 经 uPointOff 归零点光、完全依赖本平行光，而惠更斯分离（HUYGENS_SEP_ET）
+    // 后独立飞行至数万 km 外——恒锚定卡西尼时探测器落在阴影锥外（r147 锥外
+    // 片段返回全亮），自阴影静默失效。按当前可见模型重锚：分离前 probe 可见
+    // 性恒 false，huygensMesh.visible 为真即已分离；两者同屏时优先卡西尼
+    // （探测器远距优雅降级为无自阴影，与现状一致）。平行光方向全场统一，
+    // 重锚仅平移阴影锥，太阳极远方向差可忽略；锚点跳变经 lastShadowLightPos
+    // 阈值（1 cm²）自然触发阴影重绘，无需额外标记。
     if (realisticOn &&
         (cassiniModel.visible || (huygensMesh && huygensMesh.visible))) {
-      const dS = Math.hypot(_cassWorld[0], _cassWorld[1], _cassWorld[2]) || 1;
-      const rx = _cassWorld[0] - camWorld.x,
-            ry = _cassWorld[1] - camWorld.y,
-            rz = _cassWorld[2] - camWorld.z;
-      const ux = -_cassWorld[0] / dS, uy = -_cassWorld[1] / dS, uz = -_cassWorld[2] / dS;
+      let anchor = _cassWorld;
+      if (!cassiniModel.visible && huygensMesh && huygensMesh.visible) {
+        const hw = window.HuygensVis && window.HuygensVis.getWorld();
+        if (hw) anchor = hw;   // 惯性系日心坐标（与 _cassWorld 同系，太阳位于原点）
+      }
+      const dS = Math.hypot(anchor[0], anchor[1], anchor[2]) || 1;
+      const rx = anchor[0] - camWorld.x,
+            ry = anchor[1] - camWorld.y,
+            rz = anchor[2] - camWorld.z;
+      const ux = -anchor[0] / dS, uy = -anchor[1] / dS, uz = -anchor[2] / dS;
       shipSunLight.position.set(rx + ux * 0.05, ry + uy * 0.05, rz + uz * 0.05);
       shipSunLight.target.position.set(rx, ry, rz);
       if (forceShadowRefresh || t !== lastShadowT ||
