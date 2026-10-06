@@ -225,7 +225,8 @@ window.CassiniModel = (function () {
       if (p.ao && mat.map) { mat.aoMap = mat.map; mat.aoMapIntensity = p.ao; }
       mat.envMap = env;
       mat.envMapIntensity = p.env;
-      injectFill(mat, tag === 'probe' ? shineProbe : shineSC, tag);
+      injectFill(mat, tag === 'probe' ? shineProbe : shineSC,
+        tag === 'probe' ? reflProbe : reflSC, tag);
       mat.needsUpdate = true;
     }
   }
@@ -262,6 +263,14 @@ window.CassiniModel = (function () {
   const FILL_INTENSITY = 0.32;
   const fillUniform = { value: FILL_INTENSITY };
   const pointOffUniform = { value: 0 };
+  /* 金属层太阳镜面开关（仅真实光照置 1）：见 LF_BEGIN_NOPOINT 内 glint 注入块 */
+  const glintUniform = { value: 0 };
+  /* 飞船→太阳 视图空间方向（scene.js updatePlanetShine 逐帧解算）：
+   * env 间接光的暗面门禁用——实时 cube 含亮行星盘，背光面金属映亮盘是
+   * 「真实光照暗面不黑」的根源，见 aomap 注入块 envGate */
+  const sunDirUniform = { value: new THREE.Vector3(0, 0, -1) };
+
+  function setSunDirView(v) { sunDirUniform.value.copy(v); }
 
   /* 同 scene.js excludeDirLight：onBeforeCompile 拿到的是未展开 #include 的
    * 原始模板，光循环体在 lights_fragment_begin chunk 内部——直接替换
@@ -276,34 +285,76 @@ window.CassiniModel = (function () {
     // 掩食因子乘平行光：飞船真实模式直射光仅 shipSunLight 一条（sunLight 是
     // 点光，已由 uPointOff 归零），普通模式 uEclipse 恒 1 不参与。直射漫反射
     // 与镜面同随光色衰减，介质白漆高光无需再借 metalness 近似抑制
-    const out2 = out.replace(
+    let out2 = out.replace(
       'getDirectionalLightInfo( directionalLight, geometry, directLight );',
       'getDirectionalLightInfo( directionalLight, geometry, directLight );\n\t\t\tdirectLight.color *= uEclipse;');
     if (out2 === out) console.warn('uEclipse: lights_fragment_begin 锚点未命中');
+    // 金属层太阳镜面（仅真实光照，uGlint 门禁）：物理 GGX 主瓣之外叠加按粗糙度
+    // 展宽的 Blinn 高光——SUN_INTENSITY 下 GGX 峰值弱于真实照片中金箔/铝件的
+    // 日光镜面反射。注入点取方向光循环内阴影乘法之后的 RE_Direct 之前
+    // （chunk 内 RE_Direct 语句出现三次——点光/聚光/方向光循环各一，取
+    // lastIndexOf 定位方向光循环），directLight.color 此处已含阴影与掩食因子：
+    // 本影/自阴影内高光严格熄灭（真实光照「阴影处完全不反光」），metalness
+    // 加权只进金属层、介质白漆不加；普通模式 uGlint=0 整体旁路，零额外开销
+    const RE_DIRECT = 'RE_Direct( directLight, geometry, material, reflectedLight );';
+    const iRE = out2.lastIndexOf(RE_DIRECT);
+    if (iRE < 0) {
+      console.warn('uGlint: lights_fragment_begin RE_Direct 锚点未命中');
+    } else {
+      const glint =
+        '{\n' +
+        '\t\t\tvec3 glintH = normalize( directLight.direction + geometry.viewDir );\n' +
+        '\t\t\tfloat glintNL = clamp( dot( geometry.normal, glintH ), 0.0, 1.0 );\n' +
+        '\t\t\tfloat glintP = mix( 160.0, 24.0, clamp( material.roughness, 0.0, 1.0 ) );\n' +
+        '\t\t\treflectedLight.directSpecular += directLight.color * ( uGlint * metalnessFactor * pow( glintNL, glintP ) ) * material.specularColor.rgb;\n' +
+        '\t\t}\n\t\t';
+      out2 = out2.slice(0, iRE) + glint + out2.slice(iRE);
+    }
     return out2;
   })();
 
-  function injectFill(mat, shine, tag) {
+  function injectFill(mat, shine, refl, tag) {
     // 非 lit 材质（MeshBasicMaterial 等）无 aomap_fragment/lighting，replace 为空操作；
     // uniform 声明须注入全局作用域（aomap_fragment / lights_fragment_begin 位于 main() 内）
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uFillI = fillUniform;
       shader.uniforms.uPointOff = pointOffUniform;
+      shader.uniforms.uGlint = glintUniform;
+      shader.uniforms.uSunDirV = sunDirUniform;
       shader.uniforms.uEclipse = tag === 'probe' ? eclProbe : eclSC;
       shader.uniforms.uShineDir = shine.dir;
       shader.uniforms.uShineCol = shine.col;
       shader.uniforms.uShineW = shine.w;
       shader.uniforms.uShineRes = shine.res;
-      shader.fragmentShader = 'uniform float uFillI;\nuniform float uPointOff;\nuniform float uEclipse;\n' +
-        'uniform vec3 uShineDir;\nuniform vec3 uShineCol;\nuniform float uShineW;\nuniform float uShineRes;\n' + shader.fragmentShader
+      shader.uniforms.uReflDir = refl.dirs;
+      shader.uniforms.uReflCol = refl.cols;
+      shader.uniforms.uReflRad = refl.rads;
+      shader.fragmentShader = 'uniform float uFillI;\nuniform float uPointOff;\nuniform float uGlint;\nuniform vec3 uSunDirV;\nuniform float uEclipse;\n' +
+        'uniform vec3 uShineDir;\nuniform vec3 uShineCol;\nuniform float uShineW;\nuniform float uShineRes;\n' +
+        'uniform vec3 uReflDir[' + REFL_SLOTS + '];\nuniform vec3 uReflCol[' + REFL_SLOTS + '];\nuniform float uReflRad[' + REFL_SLOTS + '];\n' +
+        (hdrURef ? 'uniform float uHdrOnM;\nuniform float uExposureM;\n' : '') + shader.fragmentShader
         .replace('#include <aomap_fragment>',
         `#include <aomap_fragment>
         {
-          // 天空 env 的间接镜面随掩食熄灭：乘因子须在 shine 注入之前——
-          // 本块后半累加的行星反照光镜面不受掩食调制（同 diffuse 项理由）
+          // env 间接光门禁：乘因子须在 shine 注入之前——本块后半累加的行星
+          // 反照光不受调制（同 diffuse 项理由）。实时 env 含亮行星盘（假 IBL），
+          // 按通道分治：①漫射（大范围泛光，暗面显亮的根源）硬门禁——本影
+          // uEclipse 熄灭 + 真实光照下按日晒（N·sunDir 包裹，wrap 0.15）熄灭；
+          // ②镜面（行星盘镜像 = 实时反射效果本身，2026-10-06 用户要求真实
+          // 光照下全程启用）仅本影熄灭——镜像随视角滑动不受暗面限制
+          float sunW = clamp( ( dot( normal, uSunDirV ) + 0.15 ) / 1.15, 0.0, 1.0 );
           reflectedLight.indirectSpecular *= uEclipse;
+          reflectedLight.indirectDiffuse *= uEclipse * mix( 1.0, sunW, uGlint );
           float fillW = 0.5 * dot(normal, vec3(0.0, 0.0, -1.0)) + 0.5;
           vec3 fillIrr = mix(vec3(0.102, 0.114, 0.149), vec3(0.275, 0.314, 0.416), fillW) * uFillI;
+          // 20261010d：补光按日照因子调制（sunW 同块上文已算出，wrap 0.15）。
+          // 原实现补光为视空间恒定量——面向相机的背阳面与向阳面获得同等补光，
+          // 过晨昏线部分被抬到与受照面几乎同亮（用户报「卡西尼没有被太阳
+          // 直射的部分没有变暗」）。20261010e：背阳底光 25%→10%——深空巡航段
+          // （附近无行星）用户明确要求阴影更暗，25% 底光经 sRGB 曲线抬升后
+          // 背光面读数 ~46-60/255 观感仍亮；10% 使阴影降到 ~20-25（可辨结构
+          // 但明显是暗面）。真实光照模式 uFillI=0，本调制无副作用
+          fillIrr *= mix( 0.1, 1.0, sunW );
           reflectedLight.indirectDiffuse += fillIrr * RECIPROCAL_PI * diffuseColor.rgb;
         }
         {
@@ -317,8 +368,36 @@ window.CassiniModel = (function () {
           vec3 shineH = normalize(uShineDir + normalize(vViewPosition));
           float shineS = pow(clamp(dot(normal, shineH), 0.0, 1.0), mix(160.0, 8.0, uShineW));
           reflectedLight.indirectSpecular += uShineCol * (shineS * material.specularColor.rgb);
+        }
+        {
+          // 行星盘镜面反射（仅真实光照，scene.js 逐帧解算，见 setReflections 注释）：
+          // 反射向量落入天体角盘 → 累加其反照色 × F0。视图空间逐像素解算，
+          // 相机移动时反射像实时滑过金属面；盘缘 15% smoothstep 软化抗锯齿；
+          // uReflRad=0 槽位旁路。非真实光照模式全槽为 0，块开销仅 3 次点积
+          vec3 reflV = reflect(-normalize(vViewPosition), normal);
+          vec3 reflAcc = vec3(0.0);
+          for (int i = 0; i < ${REFL_SLOTS}; i++) {
+            if (uReflRad[i] <= 0.0) continue;
+            float reflAng = acos(clamp(dot(reflV, uReflDir[i]), -1.0, 1.0));
+            reflAcc += uReflCol[i] * (1.0 - smoothstep(uReflRad[i] * 0.85, uReflRad[i] * 1.05, reflAng));
+          }
+          reflectedLight.indirectSpecular += reflAcc * material.specularColor.rgb;
         }`)
         .replace('#include <lights_fragment_begin>', LF_BEGIN_NOPOINT);
+      // HDR 自适应曝光（scene.js setHdr 绑定同一组 uniform，见 setHdrUniforms）：
+      // 显示空间（dithering 前）乘曝光 + ACES 拟合曲线，与行星/环材质同一变换
+      if (hdrURef) {
+        shader.uniforms.uHdrOnM = hdrURef.uHdrOn;
+        shader.uniforms.uExposureM = hdrURef.uExposure;
+        shader.fragmentShader = shader.fragmentShader.replace('#include <dithering_fragment>',
+          `#include <dithering_fragment>
+          {
+            if (uHdrOnM > 0.5) {
+              vec3 _c = gl_FragColor.rgb * uExposureM;
+              gl_FragColor.rgb = clamp((_c * (2.51 * _c + 0.03)) / (_c * (2.43 * _c + 0.59) + 0.14), 0.0, 1.0);
+            }
+          }`);
+      }
     };
     mat.customProgramCacheKey = () => 'cassini-fill';
   }
@@ -327,9 +406,19 @@ window.CassiniModel = (function () {
     fillUniform.value = on ? FILL_INTENSITY : 0;
   }
 
-  /* 真实光照模式切换：飞船直射光改由平行光承担时，点光贡献归零（uniform 切换） */
+  /* HDR 自适应曝光 uniform 绑定（scene.js hdrU，构建期调用一次，引用共享）：
+   * 飞船材质与行星/环走同一曝光 + ACES 变换——掩食/夜面特写时曝光抬升，
+   * 船体与 item 7 残差环照随之可辨（否则场景亮了船仍黑）。onBeforeCompile
+   * 首跑时 hdrURef 可能尚未绑定（scene 构建晚于模型加载）——uniform 经引用
+   * 共享，晚绑定的材质在首次编译时读取即可，无需重编译。 */
+  let hdrURef = null;
+  function setHdrUniforms(u) { hdrURef = u; }
+
+  /* 真实光照模式切换：飞船直射光改由平行光承担时，点光贡献归零（uniform 切换）；
+   * 同步开启金属层太阳镜面（glint 注入块仅真实光照可见，普通模式旁路） */
   function setSunMode(on) {
     pointOffUniform.value = on ? 1 : 0;
+    glintUniform.value = on ? 1 : 0;
   }
 
   /* —— 行星反照光（真实光照模式，scene.js updatePlanetShine 逐帧解算）——
@@ -372,6 +461,79 @@ window.CassiniModel = (function () {
   function setShine(dirView, col, w, res) { setShineUniforms(shineSC, dirView, col, w, res); }
 
   function setProbeShine(dirView, col, w, res) { setShineUniforms(shineProbe, dirView, col, w, res); }
+
+  /* —— 行星盘镜面反射（真实光照，scene.js updatePlanetShine 逐帧解算）——
+   * 金属面映出周围行星的真实镜像：CPU 侧按飞船位置挑出角半径最大的至多 3 个
+   * 天体（行星/大卫星），着色端对每像素反射向量 reflect(−视线, 法线) 做角盘
+   * 命中判定——命中即累加该天体的反照色 × 材质 F0。三项物理要点：
+   *   1. 视角相关：vViewPosition 逐像素视线 + 视图空间盘心方向（scene.js 按
+   *      相机四元数变换，同 uShineDir 惯例）→ 相机绕飞船移动时反射像实时
+   *      滑过金属表面，与真实镜面行为一致；
+   *   2. 辐亮度守恒：镜面里行星像的亮度 = 行星盘自身辐亮度，不随飞船-行星
+     *    距离衰减（月球在镜中的像与抬头看一样亮）——亮度 = 反照色调 × 相位
+   *      照度比 k × SUN_INTENSITY/π，全相反照光同理量级；
+   *   3. F0 加权：× material.specularColor —— 白漆 F0≈0.04 反射自然微弱，
+   *      金属件（金箔 F0 金色 / 铝件 F0 近白）映射行星色，金箔映地球呈暖绿、
+   *      铝件映出真蓝色；漫反射/粗糙度不参与（盘像是纯镜面项）。
+   * 角盘判定用 acos 与角半径直接比较，盘缘 15% 宽 smoothstep 软化抗锯齿；
+   * uReflRad=0 槽位旁路（非真实光照模式 scene.js 全槽写 0）。uniform 按实体
+   * 分套（'sc'/'probe'），分离后探测器由 scene.js 按自身位置独立解算并经
+   * setProbeReflections 写入另一套（同 setProbeShine 惯例）。 */
+  const REFL_SLOTS = 3;
+  function mkReflUniforms() {
+    return {
+      dirs: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
+      cols: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
+      rads: { value: [0, 0, 0] },
+    };
+  }
+  const reflSC = mkReflUniforms();
+  const reflProbe = mkReflUniforms();
+
+  function setReflUniforms(u, list) {
+    for (let i = 0; i < REFL_SLOTS; i++) {
+      const s = list && list[i];
+      if (s) {
+        u.dirs.value[i].copy(s.dir);
+        u.cols.value[i].copy(s.col);
+        u.rads.value[i] = s.rad;
+      } else {
+        u.rads.value[i] = 0;
+      }
+    }
+  }
+
+  function setReflections(list) { setReflUniforms(reflSC, list); }
+
+  function setProbeReflections(list) { setReflUniforms(reflProbe, list); }
+
+  /* —— 实时环境反射通道（真实光照，scene.js bakeLiveEnv 烘焙 CubeCamera 传入）——
+   * 传入实时 cube RT 纹理（CubeReflectionMapping，needsPMREMUpdate 由
+   * CubeCamera.update 自动置位，three 内部复用缓存 RT 重跑 PMREM）后，全部
+   * 飞船材质 envMap 热切换到实时环境：金属映出带细节的真实画面（地球云形/
+   * 大陆、土星环条纹），且粗糙度过滤物理正确。传 null 回退静态星空烘焙
+   * （skyEnvTexture || envCubeTexture，原路径）。映射类型切换（equirect↔
+   * cube）会变 programCacheKey 的 envMapMode 参数 → needsUpdate 重编译，
+   * 仅发生在真实光照开关时刻（每次烘焙复用同一纹理对象，不重编译）。
+   * 材质清单复用 eclipseSeen（enhanceMaterials 已收集全部飞船材质，含探测
+   * 器克隆套）。 */
+  let liveEnvTex = null;
+
+  function applyEnvAll() {
+    const fallback = skyEnvTexture() || envCubeTexture();
+    const env = liveEnvTex || fallback;
+    for (const mat of eclipseSeen) {
+      mat.envMap = env;
+      mat.needsUpdate = true;
+    }
+  }
+
+  function setLiveEnv(tex) {
+    if (liveEnvTex === tex) return;
+    liveEnvTex = tex || null;
+    applyEnvAll();
+  }
+
 
   /* 包一层：体轴旋转 + 缩放（补光由 enhanceMaterials 注入材质，见 injectFill） */
   function wrapModel(scene3, spanKm, name) {
@@ -524,5 +686,5 @@ window.CassiniModel = (function () {
     pending.then(done);
   }
 
-  return { load, Q_GLB, setEclipse, setFillLight, setSunMode, setShine, setProbeShine, setEnvironment };
+  return { load, Q_GLB, setEclipse, setFillLight, setSunMode, setSunDirView, setShine, setProbeShine, setReflections, setProbeReflections, setLiveEnv, setEnvironment, setHdrUniforms };
 })();

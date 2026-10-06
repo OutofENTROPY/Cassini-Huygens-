@@ -523,7 +523,9 @@ window.HuygensVis = (function () {
         const sp = window.CassiniScene.screenPosOf(pos);
         const halfTan = Math.tan(THREE.MathUtils.degToRad(window.CassiniScene.camera.fov / 2));
         const mp2 = probe.userData.span / (2 * halfTan * Math.max(sp.dist, 1e-9)) * hPx;
-        if (sp.behind || mp2 > 12) labelEl.classList.add('hide');
+        // 标签开关关闭时一并隐藏（本标签逐帧自管 hide，不经过 scene.updateLabels）
+        const labelsOff = !(window.CassiniScene.isLabelsVisible && window.CassiniScene.isLabelsVisible());
+        if (labelsOff || sp.behind || mp2 > 12) labelEl.classList.add('hide');
         else {
           labelEl.classList.remove('hide');
           labelEl.classList.toggle('dim', sp.dist > 4e9);
