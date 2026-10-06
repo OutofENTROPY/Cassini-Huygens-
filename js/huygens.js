@@ -99,7 +99,11 @@ window.HuygensVis = (function () {
     const line = new THREE.Line(g, new THREE.LineBasicMaterial({
       color, transparent: true, opacity, depthWrite: false,
     }));
+    // 线在行星环后按环 alpha 解析衰减 + 绘制序置于环后（层级修复，见 scene.js
+    // applyLineRingOcc 注释）；ctx 未注入时退化为旧行为
+    if (ctx.applyLineRingOcc) ctx.applyLineRingOcc(line.material);
     line.frustumCulled = false;
+    line.renderOrder = 0.5;
     line.visible = false;
     ctx.scene.add(line);
     return line;

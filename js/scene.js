@@ -1476,6 +1476,93 @@
       (prevKey ? prevKey.call(mat) : '') + '+sattransit' + (tag || '');
   }
 
+  /* —— 轨迹线解析环遮挡（轨迹 vs 土星环显示层级）——
+   * 环材质 depthWrite 必须关（开深度会在透明环片段上剔黑大气辉光壳，
+   * 见 buildRingSystem 注释），因此轨迹线的深度测试对环无效——加色轨迹线
+   * 画在环后面仍全亮透出，视觉上线「压在环上面」（Grand Finale 密集金线
+   * 叠满环面，2026-10-05 用户报告）。
+   * 修复走辉光壳 ringTrans 同款解析法：线 fragment 对「相机→片元」射线与
+   * 各环平面求交，穿越点比片元更近且落在环带内时按环径向 alpha 衰减——
+   * α=0 不影响、半透明按比例透光，二值深度缺陷不存在。全部轨迹线材质
+   * （行星/卫星轨道线、主尾迹、已飞尾迹、Huygens 三尾、SOI 窗口线）统一
+   * 注入；配套把线对象 renderOrder 提到环（0）之后：保证环先画、线后画，
+   * 衰减只来自本注入（否则环若后绘会按 alpha 再压一次， behind 线双重变暗、
+   * in-front 线被误压）。
+   * 共享 uniforms（ringOccU）由 buildRingSystem 静态填充内外半径/贴图，
+   * updateRender 逐帧填行星心（相机相对系）与极轴；无环行星不占槽。 */
+  const RINGOCC_MAX = 4;
+  const ringOccU = {
+    uROccC: { value: Array.from({ length: RINGOCC_MAX }, () => new THREE.Vector3()) },
+    uROccN: { value: Array.from({ length: RINGOCC_MAX }, () => new THREE.Vector3()) },
+    uROccIn: { value: new Float32Array(RINGOCC_MAX) },
+    uROccOut: { value: new Float32Array(RINGOCC_MAX) },
+    uROccM0: { value: BLACK_TEX }, uROccM1: { value: BLACK_TEX },
+    uROccM2: { value: BLACK_TEX }, uROccM3: { value: BLACK_TEX },
+    uROccCnt: { value: 0 },
+  };
+  const ringOccList = [];   // { entry, slot }——updateRender 逐帧刷新 C/N
+  function applyLineRingOcc(mat) {
+    const prev = mat.onBeforeCompile;
+    mat.onBeforeCompile = (shader, renderer) => {
+      if (prev) prev(shader, renderer);
+      Object.assign(shader.uniforms, ringOccU);
+      const reuseVWPos = shader.vertexShader.includes('varying vec3 vWPos');
+      if (!reuseVWPos) {
+        shader.vertexShader = 'varying vec3 vWPos;\n' + shader.vertexShader.replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\n vWPos = (modelMatrix * vec4(position, 1.0)).xyz;');
+      }
+      shader.fragmentShader =
+        'uniform vec3 uROccC[' + RINGOCC_MAX + '];\nuniform vec3 uROccN[' + RINGOCC_MAX + '];\n' +
+        'uniform float uROccIn[' + RINGOCC_MAX + '];\nuniform float uROccOut[' + RINGOCC_MAX + '];\n' +
+        'uniform sampler2D uROccM0;\nuniform sampler2D uROccM1;\nuniform sampler2D uROccM2;\nuniform sampler2D uROccM3;\nuniform int uROccCnt;\n' +
+        (reuseVWPos ? '' : 'varying vec3 vWPos;\n') +
+        shader.fragmentShader.replace('#include <dithering_fragment>', `#include <dithering_fragment>
+        {
+          vec3 _rd = vWPos - cameraPosition;
+          float _len = length(_rd);
+          if (_len > 1e-9) {
+            _rd /= _len;
+            float _tr = 1.0;
+            for (int k = 0; k < ${RINGOCC_MAX}; k++) {
+              if (k >= uROccCnt) break;
+              float _den = dot(_rd, uROccN[k]);
+              if (abs(_den) > 1e-6) {
+                float _t = dot(uROccC[k] - cameraPosition, uROccN[k]) / _den;
+                if (_t > 0.0 && _t < _len) {          // 环平面穿越点比片元更近 → 环在前
+                  float _r = length(cameraPosition + _rd * _t - uROccC[k]);
+                  if (_r > uROccIn[k] && _r < uROccOut[k]) {
+                    float _uu = (_r - uROccIn[k]) / (uROccOut[k] - uROccIn[k]);
+                    float _a = k == 0 ? texture2D(uROccM0, vec2(_uu, 0.5)).a
+                             : k == 1 ? texture2D(uROccM1, vec2(_uu, 0.5)).a
+                             : k == 2 ? texture2D(uROccM2, vec2(_uu, 0.5)).a
+                             : texture2D(uROccM3, vec2(_uu, 0.5)).a;
+                    /* 环纹理 alpha 是「美观半透明」（B 环 0.87-0.95、A 环 0.35-0.57、
+                     * C 环 0.05-0.16），直接作透过率会让环后线只剩 40-60% 亮度，
+                     * 亮带上残影明显 = 「线压在环上」（2026-10-06 用户复报）。
+                     * 改光学深度模型：τ = −ln(1−α)（纹理原设计即自上而下混合，
+                     * 垂直穿透 T=1−α 与现状一致），斜穿光程 ∝ 1/|sin⟨射线,环面⟩|
+                     * ——低仰角视角下 B/A 环趋于不透明（真实冰环行为），C 环保持
+                     * 半透明。下限 0.05 防掠射除零。 */
+                    float _tau = -log(max(1.0 - _a, 1e-4));
+                    float _sl = max(abs(dot(_rd, uROccN[k])), 0.05);
+                    _tr *= clamp(exp(-_tau / _sl), 0.0, 1.0);
+                  }
+                }
+              }
+            }
+            gl_FragColor.rgb *= _tr;                  // 显示空间衰减（软肩/环 alpha 同域）
+          }
+        }`);
+    };
+    const pk = mat.customProgramCacheKey;
+    // cacheKey 必须逐材质唯一：r147 的 program 缓存按 key 全局共享，相同 key 的
+    // 后续材质不会执行 onBeforeCompile，materialProperties.uniforms 里就没有
+    // uROccC 系列注入 uniform——逐帧更新的环心/极轴永远传不到 GPU（遮挡失效，
+    // 2026-10-06 GPU 直读实证）。唯一 key → 每材质各自编译 → 各自持 live 引用。
+    mat.customProgramCacheKey = () => (pk ? pk.call(mat) : '') + '+ringocc_' + mat.uuid;
+  }
+
   /* —— 气态行星环参数 ——
    * 内外半径（km）与纹理：土星/天王星用 NASA Eyes 官方环径向条带
    * （sprites/saturn_rings_top.png、uranus_rings.png，u=0 内缘），半径取其
@@ -1574,6 +1661,17 @@
     tiltGroup.add(ring);
     entry.ringMesh = ring;
     entry.ringTexture = rt;
+    // 轨迹线解析环遮挡（见 applyLineRingOcc）：静态参数按槽位注册
+    {
+      const slot = ringOccList.length;
+      if (slot < RINGOCC_MAX) {
+        ringOccU.uROccIn.value[slot] = inner;
+        ringOccU.uROccOut.value[slot] = outer;
+        ringOccU['uROccM' + slot].value = rt;
+        ringOccU.uROccCnt.value = slot + 1;
+        ringOccList.push({ entry, slot });
+      }
+    }
   }
 
   function buildBodies(onLabelClick) {
@@ -1869,8 +1967,10 @@
           transparent: true, opacity: isMoon ? 0.58 : 0.72,
           blending: THREE.AdditiveBlending, depthWrite: false,
         });
+        applyLineRingOcc(om);          // 线在环后按环 alpha 衰减（层级修复）
         const line = new THREE.LineLoop(og, om);
         line.frustumCulled = false;
+        line.renderOrder = 0.5;        // 环(0)之后绘制，衰减唯一（见 applyLineRingOcc）
         entry.orbitLineObj = line;
         entry.orbitColAttr = orbitColAttr;
         entry.orbitBaseOp = om.opacity;   // 近距淡出以基础透明度为基准（见 updateRender）
@@ -1959,6 +2059,7 @@
         huygensMesh.visible = false;
         window.HuygensVis.init({
           scene, registry, eclToThree, cassiniPosAt, dotTexture, viewOccluded, modelFadeK,
+          applyLineRingOcc,
           trailOpts: () => trailOptions,
           // 分离前组合体姿态（Cassini 体轴 → 惯性系）：探测器按真实结构挂点
           // 定位到组合体上需要与母船同姿态，随真实姿态回放逐帧更新
@@ -1977,7 +2078,9 @@
       color: 0x6f96c8, transparent: true, opacity: 0.34, depthWrite: false,
       blending: THREE.AdditiveBlending,   // 同轨道线：不压暗太阳光晕（见 buildOrbit 注释）
     }));
+    applyLineRingOcc(trailFullLine.material);
     trailFullLine.frustumCulled = false;
+    trailFullLine.renderOrder = 0.5;      // 环(0)之后，线在环后按 alpha 衰减
     scene.add(trailFullLine);
     const gFlown = new THREE.BufferGeometry();
     gFlown.setAttribute('position', sharedAttr);
@@ -1986,7 +2089,9 @@
     trailFlownLine = new THREE.Line(gFlown, new THREE.LineBasicMaterial({
       color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.95, depthWrite: false,
     }));
+    applyLineRingOcc(trailFlownLine.material);
     trailFlownLine.frustumCulled = false;
+    trailFlownLine.renderOrder = 0.5;
     scene.add(trailFlownLine);
 
     const gLead = new THREE.BufferGeometry();
@@ -1995,7 +2100,9 @@
     tailAbs = new THREE.Line(gLead, new THREE.LineBasicMaterial({
       color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.95, depthWrite: false,
     }));
+    applyLineRingOcc(tailAbs.material);
     tailAbs.frustumCulled = false;
+    tailAbs.renderOrder = 0.5;
     scene.add(tailAbs);
     // 一级/二级 SOI 相对系尾迹：帧变换在 updateTrailTail 内逐帧求值（行星当前位置
     // − 历表轨迹），顶点色与 abs 尾迹同批次写入；透明度随对应窗口线同步（updateSoiTrails）
@@ -2006,7 +2113,9 @@
       const line = new THREE.Line(g, new THREE.LineBasicMaterial({
         color: 0xffffff, vertexColors: true, transparent: true, opacity: 0, depthWrite: false,
       }));
+      applyLineRingOcc(line.material);
       line.frustumCulled = false;
+      line.renderOrder = 0.5;
       line.visible = false;
       scene.add(line);
       return line;
@@ -2070,7 +2179,9 @@
           color: 0x8fb0d8, transparent: true, opacity: 0, depthWrite: false,
           blending: THREE.AdditiveBlending,   // 同轨道线：不压暗太阳光晕
         }));
+        applyLineRingOcc(full.material);
         full.frustumCulled = false; full.visible = false;
+        full.renderOrder = 0.5;
         scene.add(full);
         const gFlown = new THREE.BufferGeometry();
         gFlown.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
@@ -2079,7 +2190,9 @@
         const flown = new THREE.Line(gFlown, new THREE.LineBasicMaterial({
           color: 0xffffff, vertexColors: true, transparent: true, opacity: 0, depthWrite: false,
         }));
+        applyLineRingOcc(flown.material);
         flown.frustumCulled = false; flown.visible = false;
+        flown.renderOrder = 0.5;
         scene.add(flown);
         wins.push({
           a, b, i0, n, times: trailT.subarray(i0, i1 + 1), rel, rel0, full, flown, colAttr,
@@ -2431,6 +2544,11 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     }
 
     // ---- 大气边缘昼向 uniform（已并入表面材质）+ 辉光壳太阳位置 ----
+    // 轨迹线解析环遮挡（applyLineRingOcc）：环平面圆心（相机相对系）与极轴逐帧刷新
+    for (const ro of ringOccList) {
+      ringOccU.uROccC.value[ro.slot].copy(ro.entry.group.position);
+      ringOccU.uROccN.value[ro.slot].copy(ro.entry.polarN);
+    }
     _camQInv.copy(camera.quaternion).invert();
     for (const [name, entry] of registry) {
       if (name === '__sunLight') continue;
@@ -3746,6 +3864,9 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     get attitudeState() { return ATT_LBL[attMode] || ATT_LBL.earth; },
     get shineDebug() { return shineDebug; },   // 行星反照光逐帧状态（调试）
     get postDebug() { return post; },          // 后处理链状态（调试：hdr/rtSun/uniforms）
+    get rendererRef() { return renderer; },    // 调试探针：WebGLRenderer 句柄（program dump）
+    get ringOccU() { return ringOccU; },       // 轨迹线解析环遮挡 uniforms（调试/AB 对照）
+    get ringOccList() { return ringOccList; },
     setCameraWorld(v) { camWorld.x = v[0]; camWorld.y = v[1]; camWorld.z = v[2]; },
     camWorld,
     cassiniPosAt,

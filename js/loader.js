@@ -21,9 +21,10 @@
   var V = {
     three: '2026094', gltf: '2026103', tex: '2026401', stars: '2026094',
     cassini: '2026105', moons: '2026105', attitude: '2026301', models: '2026303',
-    events: '2026405', jtex: '2026103', huygens: '20261004c', cmodel: '2026305',
-    scene: '20261005h', camera: '20261004a', timeline: '20261004c', main: '20261004e',
+    events: '2026405', jtex: '2026103', huygens: '20261005a', cmodel: '2026305',
+    scene: '20261006c', camera: '20261004a', timeline: '20261004c', main: '20261004e',
   };
+  console.log('[Cassini] module versions:', JSON.stringify(V));   // 自查缓存：控制台应出现本行且 scene 为最新
   var MANIFEST = [
     ['lib/three.min.js?v=' + V.three, 'lib', 607784],
     ['lib/GLTFLoader.js?v=' + V.gltf, 'lib', 103311],
