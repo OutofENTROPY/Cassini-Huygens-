@@ -173,10 +173,23 @@ body { touch-action: manipulation; }
   backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), var(--shadow-2);
   transform-origin: top right;
+  /* 高度上限：top 偏移 54px + 父级(#hud-right)定位偏移 ~16px + 底部预留时间轴控制区
+     （实测 ~142px + 8px 间隙 ≈ 166px），超出即面板内滚动，
+     保证小屏 / 低分辨率平板上不被压到时间控制区下面 */
+  max-height: calc(100vh - 54px - 166px);
+  max-height: calc(100dvh - 54px - 166px);   /* dvh 优先：移动端地址栏收展不误判 */
+  overflow-y: auto;
+  overscroll-behavior: contain;              /* 滚到边界不带动页面/画布手势 */
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.22) transparent;
   /* 开合双向过渡：display 走 allow-discrete，收起时等淡出结束再移除渲染树 */
   opacity: 1; transform: none;
   transition: opacity .22s var(--ease), transform .25s var(--spring), display .3s allow-discrete;
 }
+#settings-panel::-webkit-scrollbar { width: 4px; }
+#settings-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); border-radius: 2px; }
+#settings-panel::-webkit-scrollbar-track { background: transparent; }
 #settings-panel.hidden {
   display: none; opacity: 0;
   transform: scale(0.92) translateY(-6px);
@@ -252,6 +265,8 @@ body.hud-open #hud {
 #hud-att { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 #hud-dist { font-size: 11px; color: var(--text-dim); margin-top: 6px; line-height: 1.5; }
 #hud-vel { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+#hud-render { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+#hud-render b { color: var(--text); font-weight: 500; }
 
 /* ---------- 天体朝向与自转状态 ---------- */
 #body-info {
@@ -609,6 +624,12 @@ body.event-open:not(.event-folded) #event-fab {
     max-height: calc(100dvh - 264px);
   }
 
+  /* 设置面板：移动端底部预留更大（时间轴压缩排布 + 手势条），其余滚动规则同基础态 */
+  #settings-panel {
+    max-height: calc(100vh - 54px - 150px);
+    max-height: calc(100dvh - 54px - 150px);
+  }
+
   /* 事件卡：左下角（时间轴上方），收紧留白避免窄屏溢出 */
   #event-card { left: 10px; bottom: 142px; padding: 13px 15px 13px 17px; }
   #topbar { padding: 10px 12px; }
@@ -624,6 +645,12 @@ body.event-open:not(.event-folded) #event-fab {
       top: 56px;
       max-height: calc(100vh - 206px);
       max-height: calc(100dvh - 206px);
+    }
+    /* 设置面板同步收紧：上移贴近视图钮行，底部少留（时间轴压缩态），超出滚动 */
+    #settings-panel {
+      top: 46px;
+      max-height: calc(100vh - 46px - 136px);
+      max-height: calc(100dvh - 46px - 136px);
     }
     #hud-stack { top: 46px; }
     #rate-wrap { width: 46vw; }

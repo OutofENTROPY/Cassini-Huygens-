@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Cassini–Huygens 历史飞行数据 · 3D 轨迹可视化 (1997–2017)</title>
-<link rel="stylesheet" href="css/style.css?v=20261004w">
+<link rel="stylesheet" href="css/style.css?v=20261006b">
 </head>
 <body>
 <div id="app">
@@ -39,10 +39,21 @@
           <span>真实光照</span>
           <button class="switch" id="lighting-btn" role="switch" aria-checked="false" title="真实光照：实时解算遮挡关系（行星本影 + 机体自阴影），阴影处完全不反光"></button>
         </div>
+        <div class="set-row">
+          <span>HDR 自适应曝光</span>
+          <button class="switch" id="hdr-btn" role="switch" aria-checked="false" title="HDR：实测视野亮度自动调节曝光（看向太阳/亮环自动压暗，深空/夜面/掩食自动抬升）并套电影级色调曲线；真实光照模式下走完整 HDR 管线，模拟人眼明暗适应"></button>
+        </div>
+        <div class="set-row">
+          <span>曝光 EV</span>
+          <span id="hdr-ev-val" style="opacity:.75;font-size:11px">+0.0</span>
+        </div>
+        <div class="set-row">
+          <input type="range" id="hdr-ev" min="-2" max="2" step="0.1" value="0" title="手动曝光补偿：叠在自动曝光上的正负档（±2 EV）" style="width:100%;accent-color:#8fa3bf">
+        </div>
         <div class="set-label">标签</div>
         <div class="set-row">
           <span>天体标签</span>
-          <button class="switch on" id="labels-toggle" role="switch" aria-checked="true" title="显示行星 / 卫星 / Cassini 的名称标签"></button>
+          <button class="switch on" id="labels-toggle" role="switch" aria-checked="true" title="显示行星 / 卫星 / Cassini / Huygens 的名称标签"></button>
         </div>
         <div class="set-label">轨迹</div>
         <div class="set-row">
@@ -85,6 +96,7 @@
       <div id="hud-att">—</div>
       <div id="hud-dist">—</div>
       <div id="hud-vel">—</div>
+      <div id="hud-render">—</div>
     </div>
 
     <!-- 天体朝向与自转状态（item 9，聚焦行星/卫星时显示） -->
@@ -209,6 +221,6 @@
   </div>
 </div>
 
-<script src="js/loader.js?v=20261006e"></script>
+<script src="js/loader.js?v=20261010k"></script>
 </body>
 </html>
