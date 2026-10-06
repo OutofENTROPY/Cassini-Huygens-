@@ -2659,9 +2659,11 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
       window.CassiniModel.setEclipse(fC, fH);
       // 行星反照光：不受掩食因子直接调制——采样面元自带局地光照权重，
       // 飞船进入本影时看到的正是行星夜面，反照光随采样变暗自然熄灭。
-      // 分离后的惠更斯位置一并传入：探测器按自身位置独立解算（未分离为
-      // null，挂于组合体走轨道器那套 uniforms）
-      updatePlanetShine(t >= HUYGENS_SEP_ET ? hw : null);
+      // item 7：掩食因子一并传入，本影内解算环照/大气边缘残差补项
+      // （(1−f) 加权，f=1 无食时严格归零）。分离后的惠更斯位置一并传入：
+      // 探测器按自身位置独立解算（未分离为 null，挂于组合体走轨道器那套
+      // uniforms）
+      updatePlanetShine(t >= HUYGENS_SEP_ET ? hw : null, fC, fH);
     }
 
     // ---- Cassini marker + model（真实尺寸缩放 + 真实姿态）----
@@ -2883,6 +2885,21 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     earth: [0.72, 0.82, 1.0], venus: [1.0, 0.95, 0.82], mars: [1.0, 0.83, 0.65],
     titan: [1.0, 0.82, 0.55],
   };
+  /* —— item 7 暗面土照：本影内暗面残差反照光 ——
+   * 原模型在飞船进入行星本影时反照光按相位 k→0 熄灭（看到的是行星夜面），
+   * 飞船暗面严格全黑。物理上本影内仍有两路真实光源：①环照——土星环大部分
+   * 位于本影之外（本影在环面处的影带很窄），环冰反光环绕飞船；②大气边缘
+   * 散射——太阳光擦着行星limb折射/散射进影锥（真探 frames 里呈橙红光环）。
+   * 二者是围绕行星中心的扩展源，量级远小于直射与全相反照光，故建模为对既有
+   * 反照光链路的残差补项：iRes = α_g·(R/d)²·K_ecl·(1−f)。f 为掩食因子
+   * （eclipseFactor，1=无食 → 补项归零，严格不污染非掩食段），K_ecl 校准
+   * 全食时残差 ≈ 直射阳光的 4–5%（Grand Finale 近土点 (R/d)²≈0.89 时
+   * iRes ≈ 0.47×0.89×0.10 ≈ 0.042）。色调取静态值（环冰偏暖金；地球大气
+   * 边缘为橙红暮光——贴图采样在本影内会给出全零夜面色，不可用）。 */
+  const SHINE_ECL = { saturn: 0.10, jupiter: 0.05, earth: 0.06 };
+  const SHINE_ECL_TINT = {
+    saturn: [1.0, 0.94, 0.82], jupiter: [1.0, 0.90, 0.75], earth: [1.0, 0.62, 0.40],
+  };
   /* —— 位置相关色调与亮度：表面贴图 CPU 采样 ——
    * 每天体懒抽取一张 128×64 equirect 缩略图（image/canvas 统一走 drawImage，
    * 贴图就绪前逐帧重试），并记录其全球平均亮度 lum（线性域）。逐帧在局部切
@@ -3019,6 +3036,7 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
   const _shineDbgCraft = [0, 0, 0], _shineDbgSmp = [0, 0, 0], _shineDbgSun = [0, 0, 0];
   const shineDebug = {
     body: null, tint: null, i: 0, dKm: 0, alphaDeg: 0,
+    resI: 0, resF: 1,   // item 7 暗面残差：强度与掩食因子（无残差时 resI=0/resF=1）
     craft: _shineDbgCraft, smp: _shineDbgSmp, sunL: _shineDbgSun, lam: 0,
   };   // 调试探针（CassiniScene.shineDebug）；craft/smp/sunL 为复用缓冲，仅即时读取
   /* 逐天体取贡献最大的反照光天体（对给定飞船位置解算；分离后轨道器与
@@ -3063,35 +3081,99 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     outCol.set(tint[0] * I, tint[1] * I, tint[2] * I);
   }
 
+  /* —— item 7 暗面土照：本影内残差反照光解算 ——
+   * 取 SHINE_ECL 系数天体中 α_g·(R/d)² 最大者（不乘相位 k——残差的光源是
+   * 环面/大气边缘而非行星盘亮面，本影内 k≈0 正是它要补的场景），量级再乘
+   * (1−f)：f=1（无食）严格归零，全食 f=0 取满。方向与行星反照光同向（朝
+   * 行星中心——环/大气边缘光源围绕行星中心分布，一阶近似取质心方向）。 */
+  function solveEclResidual(world, f) {
+    if (f === undefined || f >= 1) return null;
+    let best = 0, bestName = null, bestE = null, bdKm = 0, bcosA = 0;
+    for (const [name, e] of registry) {
+      if (!SHINE_ECL[name] || !e.radius) continue;
+      const dx = e.world[0] - world[0],
+            dy = e.world[1] - world[1],
+            dz = e.world[2] - world[2];
+      const d = Math.hypot(dx, dy, dz);
+      if (d <= e.radius) continue;            // 已撞入行星本体
+      const ratio = e.radius / d;
+      const c = (SHINE_ALBEDO[name] || 0.4) * ratio * ratio * SHINE_ECL[name];
+      if (c > best) {
+        best = c; bestName = name; bestE = e; bdKm = d;
+        bcosA = Math.max(-1, Math.min(1,
+          (dx * e.world[0] + dy * e.world[1] + dz * e.world[2]) /
+          (d * (Math.hypot(e.world[0], e.world[1], e.world[2]) || 1))));
+      }
+    }
+    if (!bestE || best <= 1e-5) return null;
+    return { name: bestName, entry: bestE, dKm: bdKm, w: bestE.radius / bdKm,
+             cosA: bcosA, iRes: best * (1 - f),
+             dx: (bestE.world[0] - world[0]) / bdKm,
+             dy: (bestE.world[1] - world[1]) / bdKm,
+             dz: (bestE.world[2] - world[2]) / bdKm };
+  }
+  /* 残差 → 颜色累加（方向仅在既有反照光缺失时才写入 outDir——两者指向同一天体）。
+   * 返回 1 表示有残差（着色端 uShineRes 置 1 启用暗面补项）。 */
+  function applyEclResidual(s, outDir, outCol, haveDir) {
+    if (!haveDir) outDir.set(s.dx, s.dy, s.dz).applyQuaternion(_camQInv);
+    const tint = SHINE_ECL_TINT[s.name] || [1, 1, 1];
+    const I = SUN_INTENSITY * s.iRes;
+    outCol.x += tint[0] * I; outCol.y += tint[1] * I; outCol.z += tint[2] * I;
+    return 1;
+  }
+
   const _shineDirH = new THREE.Vector3();
   const _shineColH = new THREE.Vector3();
   const _shineTintH = [1, 1, 1];
-  function updatePlanetShine(hw) {
+  function updatePlanetShine(hw, fC, fH) {
     // 探测器（hw = 分离后惠更斯位置，未分离为 null）先解算：shineDebug 探针
     // 缓冲（smp/sunL/lam 在 sampleShineTint 内复用）随后被 Cassini 解算覆写，
-    // 调试语义保持卡西尼视角
+    // 调试语义保持卡西尼视角。item 7：各实体独立解算本影残差补项（fC/fH），
+    // 有残差时 uShineRes 置 1 启用着色端暗面补项
     const h = hw ? solveShine(hw) : null;
-    if (h) {
-      applyShine(h, _shineDirH, _shineColH, _shineTintH);
-      window.CassiniModel.setProbeShine(_shineDirH, _shineColH, h.w);
+    const hr = hw ? solveEclResidual(hw, fH) : null;
+    if (h || hr) {
+      if (h) {
+        applyShine(h, _shineDirH, _shineColH, _shineTintH);
+      } else {
+        _shineColH.set(0, 0, 0);
+      }
+      const rh = hr ? applyEclResidual(hr, _shineDirH, _shineColH, !!h) : 0;
+      window.CassiniModel.setProbeShine(_shineDirH, _shineColH, h ? h.w : hr.w, rh);
     } else {
       window.CassiniModel.setProbeShine(null, null, 0);
     }
     const s = solveShine(_cassWorld);
-    if (s) {
-      applyShine(s, _shineDir, _shineCol, _shineTint);
-      window.CassiniModel.setShine(_shineDir, _shineCol, s.w);
-      shineDebug.body = s.name;
-      shineDebug.tint = [_shineTint[0], _shineTint[1], _shineTint[2]];
-      shineDebug.i = s.i;
-      shineDebug.dKm = Math.round(s.dKm);
-      shineDebug.alphaDeg = +(Math.acos(Math.max(-1, Math.min(1, s.cosA))) * 180 / Math.PI).toFixed(1);
+    const sr = solveEclResidual(_cassWorld, fC);
+    if (s || sr) {
+      if (s) {
+        applyShine(s, _shineDir, _shineCol, _shineTint);
+        shineDebug.body = s.name;
+        shineDebug.tint = [_shineTint[0], _shineTint[1], _shineTint[2]];
+        shineDebug.i = s.i;
+        shineDebug.dKm = Math.round(s.dKm);
+        shineDebug.alphaDeg = +(Math.acos(Math.max(-1, Math.min(1, s.cosA))) * 180 / Math.PI).toFixed(1);
+      } else {
+        // 全食反照光熄灭、仅剩残差：调试面板显示残差解算结果
+        _shineCol.set(0, 0, 0);
+        shineDebug.body = sr.name;
+        const tint = SHINE_ECL_TINT[sr.name] || [1, 1, 1];
+        shineDebug.tint = [tint[0], tint[1], tint[2]];
+        shineDebug.i = sr.iRes;
+        shineDebug.dKm = Math.round(sr.dKm);
+        shineDebug.alphaDeg = +(Math.acos(Math.max(-1, Math.min(1, sr.cosA))) * 180 / Math.PI).toFixed(1);
+      }
+      const r = sr ? applyEclResidual(sr, _shineDir, _shineCol, !!s) : 0;
+      window.CassiniModel.setShine(_shineDir, _shineCol, s ? s.w : sr.w, r);
+      shineDebug.resI = sr ? sr.iRes : 0;
+      shineDebug.resF = sr ? fC : 1;
       _shineDbgCraft[0] = _cassWorld[0]; _shineDbgCraft[1] = _cassWorld[1]; _shineDbgCraft[2] = _cassWorld[2];
       shineDebug.craft = _shineDbgCraft;
     } else {
       window.CassiniModel.setShine(null, null, 0);
       shineDebug.body = null; shineDebug.tint = null; shineDebug.i = 0;
       shineDebug.dKm = 0; shineDebug.alphaDeg = 0; shineDebug.craft = null;
+      shineDebug.resI = 0; shineDebug.resF = 1;
     }
   }
 
@@ -3863,6 +3945,7 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     get soiState() { return soiState; },
     get attitudeState() { return ATT_LBL[attMode] || ATT_LBL.earth; },
     get shineDebug() { return shineDebug; },   // 行星反照光逐帧状态（调试）
+    get shineEcl() { return SHINE_ECL; },      // item 7 暗面残差系数（可写，A/B：置 0 关闭）
     get postDebug() { return post; },          // 后处理链状态（调试：hdr/rtSun/uniforms）
     get rendererRef() { return renderer; },    // 调试探针：WebGLRenderer 句柄（program dump）
     get ringOccU() { return ringOccU; },       // 轨迹线解析环遮挡 uniforms（调试/AB 对照）

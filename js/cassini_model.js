@@ -293,8 +293,9 @@ window.CassiniModel = (function () {
       shader.uniforms.uShineDir = shine.dir;
       shader.uniforms.uShineCol = shine.col;
       shader.uniforms.uShineW = shine.w;
+      shader.uniforms.uShineRes = shine.res;
       shader.fragmentShader = 'uniform float uFillI;\nuniform float uPointOff;\nuniform float uEclipse;\n' +
-        'uniform vec3 uShineDir;\nuniform vec3 uShineCol;\nuniform float uShineW;\n' + shader.fragmentShader
+        'uniform vec3 uShineDir;\nuniform vec3 uShineCol;\nuniform float uShineW;\nuniform float uShineRes;\n' + shader.fragmentShader
         .replace('#include <aomap_fragment>',
         `#include <aomap_fragment>
         {
@@ -308,7 +309,11 @@ window.CassiniModel = (function () {
         {
           float shineNL = dot(normal, uShineDir);
           float shineD = clamp((shineNL + uShineW) / (1.0 + uShineW), 0.0, 1.0);
-          reflectedLight.indirectDiffuse += uShineCol * (shineD * RECIPROCAL_PI) * diffuseColor.rgb;
+          // item 7 暗面土照：本影内环照/大气边缘残差补到背行星面
+          //（0.5−0.5·nl 在背行星面=1、晨昏线=0.5，与 shineD 互补成半球）；
+          // uShineRes=0（非掩食段）时逐位回退原包裹 Lambert，无额外开销
+          float shineR = uShineRes * clamp(0.5 - 0.5 * shineNL, 0.0, 1.0);
+          reflectedLight.indirectDiffuse += uShineCol * ((shineD + shineR) * RECIPROCAL_PI) * diffuseColor.rgb;
           vec3 shineH = normalize(uShineDir + normalize(vViewPosition));
           float shineS = pow(clamp(dot(normal, shineH), 0.0, 1.0), mix(160.0, 8.0, uShineW));
           reflectedLight.indirectSpecular += uShineCol * (shineS * material.specularColor.rgb);
@@ -350,21 +355,23 @@ window.CassiniModel = (function () {
       dir: { value: new THREE.Vector3(0, 0, -1) },
       col: { value: new THREE.Vector3(0, 0, 0) },
       w: { value: 0 },
+      res: { value: 0 },   // item 7 暗面土照：本影残差补项开关（scene.js 按 (1−f) 解算强度）
     };
   }
   const shineSC = mkShineUniforms();
   const shineProbe = mkShineUniforms();
 
-  function setShineUniforms(u, dirView, col, w) {
+  function setShineUniforms(u, dirView, col, w, res) {
     if (dirView) u.dir.value.copy(dirView);
     if (col) u.col.value.copy(col);
     else u.col.value.set(0, 0, 0);
     u.w.value = w || 0;
+    u.res.value = (dirView && res) || 0;
   }
 
-  function setShine(dirView, col, w) { setShineUniforms(shineSC, dirView, col, w); }
+  function setShine(dirView, col, w, res) { setShineUniforms(shineSC, dirView, col, w, res); }
 
-  function setProbeShine(dirView, col, w) { setShineUniforms(shineProbe, dirView, col, w); }
+  function setProbeShine(dirView, col, w, res) { setShineUniforms(shineProbe, dirView, col, w, res); }
 
   /* 包一层：体轴旋转 + 缩放（补光由 enhanceMaterials 注入材质，见 injectFill） */
   function wrapModel(scene3, spanKm, name) {
