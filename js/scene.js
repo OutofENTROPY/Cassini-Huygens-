@@ -20,6 +20,13 @@
    * 编译前执行（模块加载即生效）。 */
   THREE.ShaderChunk.encodings_fragment = 'gl_FragColor = LinearTosRGB( gl_FragColor );';
 
+  /* 真 HDR 管线的 WebKit 禁用（2026-10-07 探针裁决）：
+   * 连续帧循环下 WebKit 渲入 16F RT 的银河带/星点内容比单帧隔离渲染亮 3-4 倍
+   * （隔离渲染+采样+读回逐位正确；同页循环内 readback 证实偏亮；Chrome/真实 GPU
+   * 逐位一致且盘面跨引擎相同）——WebKit 引擎级缺陷，非本管线可修。旧材质注入
+   * 路径（uHdrOn 分支）在 WebKit 已验证可用，故 UA 探测到 WebKit 时整条 RT
+   * 管线关闭，走回退（rtSun 16F 不受影响，沿用作 bloom 掩膜）。 */
+  const IS_WEBKIT_UA = /AppleWebKit/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent);
   const DATA = window.CASSINI_DATA;
   // 卫星细网格（data/moons_data.js，运行时 Catmull-Rom 插值）并入天体表
   if (window.MOONS_DATA) {
@@ -458,12 +465,22 @@
   const BODIES = [
     { name: 'sun', radius: 696000, tex: 'proc:sun', emissive: true, label: 'Sun' },
     { name: 'mercury', radius: 2439.7, tex: 'mercury', label: 'Mercury', flatten: 0.0009 },
-    { name: 'venus', radius: 6051.8, tex: 'venus', label: 'Venus', glow: '#e8d8a8', atmo: { color: 0xe8d8a0, intensity: 0.55, power: 2.6 } },
+    { name: 'venus', radius: 6051.8, tex: 'venus', label: 'Venus', glow: '#e8d8a8',
+      // 大气晨昏 wrap（atmoWrap）：亮弧越过晨昏线的余弦宽度，按真实大气
+      // 厚度/密度标定——金星 92 atm CO₂ 为太阳系最浓类地大气，前向散射把光
+      // 绕过晨昏线 ~20°（真实影像中金星晨昏线几乎无明暗对比）
+      // atmoHaze：limb 掠射雾化标定（见 applyAtmoRim 注释）——92 atm 下
+      // 过渡带收在最外 ~10% 半径，盘面主体细节保留
+      atmoWrap: 0.34, atmoHaze: 1.0,
+      atmo: { color: 0xe8d8a0, intensity: 0.55, power: 2.6 } },
     { name: 'earth', radius: 6371, tex: 'earth', label: 'Earth', clouds: true, glow: '#6fa8ff',
       // NASA Eyes AtmosphereComponent 参数：色 (0.841,1.047,1.5) HDR 蓝、日落 (1,.5,0)×1.2；
       // halo = 盘外大气辉光壳；夜面城市灯光 earthNight（NASA Eyes 夜贴图）；海洋镜面见 Phong 材质。
       // power 3.4 让蓝晕铺进盘面内侧 + wash 昼面常数薄雾（整体淡蓝、NASA Eyes
       // 观感）——只靠 rim 会留下饱和深蓝的海洋中部
+      // atmoWrap 0.15 = 1 atm 基准（亮弧越晨昏线 ~8.6° 归零）；
+      // atmoHaze 0.35 = 1 atm 雾化基准（过渡带集中最外 ~8% 半径）
+      atmoWrap: 0.15, atmoHaze: 0.35,
       atmo: { color: [0.841, 1.047, 1.5], intensity: 0.62, power: 3.4, wash: 0.12,
               sunset: { color: [1.0, 0.5, 0.0], intensity: 1.2 },
               // 城市灯光压到真实观感：夜贴图城市核心接近纯白，1.25 会把夜面
@@ -471,16 +488,25 @@
               night: { tex: 'earthNight', intensity: 0.5 },
               halo: { color: [0.42, 0.66, 1.0], intensity: 0.9 } },
       flatten: 0.0034 },
-    { name: 'mars', radius: 3389.5, tex: 'mars', label: 'Mars', atmo: { color: 0xc08060, intensity: 0.3, power: 3.2 }, flatten: 0.0059 },
+    { name: 'mars', radius: 3389.5, tex: 'mars', label: 'Mars',
+      // 0.006 atm：大气极薄，散射 wrap 几乎没有——真实火星晨昏线锐利；
+      // 掠射雾化同样极弱，贴图细节一直保持到贴边
+      atmoWrap: 0.05, atmoHaze: 0.1,
+      atmo: { color: 0xc08060, intensity: 0.3, power: 3.2 }, flatten: 0.0059 },
     { name: 'jupiter', radius: 69911, tex: 'jupiter', label: 'Jupiter', glow: '#d8c0a0', rings: true,
+      // 无固体表面的气态巨行星：大气有效无限厚，wrap 取类地基准之上（~15°）
+      atmoWrap: 0.26,
       // 真实扁率：(赤道 71492 − 极 66854) / 71492 ≈ 0.0649——快速自转的
       // 气态巨行星为扁椭球，压极轴、赤道半径不变
       flatten: 0.0649 },
     { name: 'saturn', radius: 58232, tex: 'saturn', label: 'Saturn', rings: true, glow: '#e8d8a8',
       // 大气散射（Grand Finale 坠入段放大到模型大小时可见）：暖金边缘光 + 盘外
       // 辉光壳——卡西尼实拍土星 limb 为奶油金霾，强度/宽度取 Venus 与 Titan 之间
+      // atmoWrap 0.26：同为气态巨行星（与木星一致，~15°）；
+      // atmoHaze 0.6：云顶之上大气柱厚，limb 带渐融为奶油金霾
+      atmoWrap: 0.26, atmoHaze: 0.75, hazeTone: 1.5,
       atmo: { color: 0xd8b878, intensity: 0.5, power: 2.6, wash: 0.04,
-              halo: { color: 0xf0e2b6, intensity: 0.85 } },
+              halo: { color: 0xf0e2b6, intensity: 0.7 } },
       // 扁率 0.098 = (60268−54364)/60268——行星之最；环仍在赤道面，不受 Y 压缩影响
       flatten: 0.0980 },
     { name: 'uranus', radius: 25362, tex: 'uranus', label: 'Uranus', rings: true, flatten: 0.0229 },
@@ -492,6 +518,9 @@
       // 盘外辉光壳。真实泰坦 limb 为不透明橙霾、可见厚度数倍于类地行星
       // （Huygens 探空：雾霾层顶 ~500 km ≈ 1.2R）——halo 衰减尺度放慢
       // （spread），光晕更厚更饱和；壳缘窗口仍精确归零无硬边
+      // atmoWrap 0.46：浓霾 + 厚大气，亮弧越晨昏线 ~27°（全太阳系最大 wrap）；
+      // atmoHaze 1.6：真实泰坦 limb 即不透明橙霾，最外带贴图让位于霾
+      atmoWrap: 0.46, atmoHaze: 1.6,
       atmo: { color: 0xd89550, intensity: 0.65, power: 2.4,
               halo: { color: 0xf0a860, intensity: 1.0, spread: 2.2 } },
       flatten: 0.0011 },
@@ -649,8 +678,8 @@
   /* 根数关键帧选取：取 t 之前的最后一帧（而非最近帧）。各关键帧 M0 相互独立
    * 拟合、不连续（实测 Mimas 相邻帧位置可差 6.2 万 km、Rhea 47 万 km）——
    * 最近帧选取在时间推进中每半个帧距翻转一次，轨道线随之整条跳位（卫星
-   * 轨迹抖动的根源）。固定取前一帧 + 与几何重建同帧的平移修正后，帧间严格
-   * 连续，跳变只剩重建时刻的微小形状修正。 */
+   * 轨迹抖动的根源）。帧间连续性改由下面的窗口混合保证：跨界处 w→1 与下一
+   * 窗口 w→0 的混合位置重合，选取翻转不再产生跳变。 */
   function elemsKeyLo(entry, t) {
     const eT = entry.elems.eT;
     let lo = 0, hi = eT.length - 1;
@@ -659,42 +688,93 @@
     while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (eT[mid] <= t) lo = mid; else hi = mid; }
     return lo;
   }
-  /* 相位中心化重建：顶点 N/2 精确落在当前平近点角 M(t) 上（消除固定相位网格
-   * 在行星处的弦偏差——放大到行星大小时轨迹与模型严格重合的关键），再配合
-   * 逐帧平移修正（实际历表位置 − 椭圆位置），交点零偏差。 */
+  /* 关键帧间位置混合：单帧椭圆按 M0 + n·(t−eT[k]) 外推的拟合误差随窗口内
+   * 位置增长，且相邻帧反号（一帧超前、一帧滞后）。按 w = (t−eT[k])/(帧距)
+   * 线性混合前后两帧的预测位置，误差几乎完全抵消——实测 6h 步长跨整窗口
+   * 采样（中位/最大，km）：Mimas 20,174/37,978 → 617/883、Enceladus
+   * 10,314/19,823 → 351/760、Tethys 6,871/11,429 → 543/646、Titan 73/270 →
+   * 32/40。w≤0（首帧之前）与 k+1 越界退化为单帧外推（原行为）。 */
+  function blendPosAtTime(entry, t, out) {
+    const els = entry.elems, eT = els.eT, eV = els.eV;
+    const k = elemsKeyLo(entry, t);
+    let o = k * 8;
+    const v = elemPosEcl(eV[o], eV[o + 1], eV[o + 2], eV[o + 3],
+      eV[o + 4], eV[o + 5], eV[o + 6], eV[o + 7],
+      eV[o + 3] + eV[o + 2] * (t - eT[k]));
+    out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
+    if (k + 1 >= eT.length) return out;
+    const w = (t - eT[k]) / (eT[k + 1] - eT[k]);
+    if (w <= 0) return out;
+    o += 8;
+    const v2 = elemPosEcl(eV[o], eV[o + 1], eV[o + 2], eV[o + 3],
+      eV[o + 4], eV[o + 5], eV[o + 6], eV[o + 7],
+      eV[o + 3] + eV[o + 2] * (t - eT[k + 1]));
+    out[0] += (v2[0] - out[0]) * w;
+    out[1] += (v2[1] - out[1]) * w;
+    out[2] += (v2[2] - out[2]) * w;
+    return out;
+  }
+  /* 轨道环重建：顶点按【时刻】均布（t_i = t + (i/N−0.5)·P，N/2 号顶点恰为
+   * 当前时刻），环几何优先取天体历表轨迹 track.at(t_i)——即天体的真实路径，
+   * 与渲染端定位（updatePositions 的 entry.track.at）同源同精度：环心严格
+   * 位于母体（Δ≡0）、交点亚 km 贴合，且精度与重建节奏无关——快进/倒退时
+   * 轨道线不再随时间漂移。真实路径逐圈进动/摄动偏差 ~0.1% 轨道半径（Mimas
+   * 逐圈 ~0.16 km 进动），视觉上与椭圆无异。无轨迹段时回退根数混合
+   * （blendPosAtTime，Mimas 残差 ~0.6k km）。平近点角锚点 _orbitMt/_orbitK
+   * 仍取根数关键帧：仅 applyOrbitFade 的年龄推进使用（dph 用同帧外推，帧间
+   * 严格连续），不参与环几何。 */
   function rebuildOrbitLine(entry, t) {
     const els = entry.elems;
     if (!els || els.n < 2) return;
     const k = elemsKeyLo(entry, t);
     const o = k * 8;
-    const a = els.eV[o], e = els.eV[o + 1], n = els.eV[o + 2], M0 = els.eV[o + 3];
-    const qw = els.eV[o + 4], qx = els.eV[o + 5], qy = els.eV[o + 6], qz = els.eV[o + 7];
+    const n = els.eV[o + 2], M0 = els.eV[o + 3];
     const Mt = M0 + n * (t - els.eT[k]);
     entry._orbitMt = Mt;   // 顶点网格的相位锚点（applyOrbitFade 的年龄零点）
     entry._orbitK = k;     // 锚点所用关键帧（淡出端用同帧外推，避免跨关键帧 M 跳变）
     const attr = entry.orbitLineObj.geometry.attributes.position;
     const N = attr.count;
-    for (let i = 0; i < N; i++) {
-      const M = Mt + TAU * (i / N - 0.5);
-      const v = elemPosEcl(a, e, n, M0, qw, qx, qy, qz, M);
-      const w = eclToThree(v);
-      attr.setXYZ(i, w[0], w[1], w[2]);
+    const dtV = TAU / (n * N);      // 相邻顶点的时间间隔（s）：一周 N 等分 → 时刻均匀
+    const t0 = t - 0.5 * dtV * N;   // 顶点 0 的时刻
+    const _v = [0, 0, 0];
+    if (entry.track && entry.track.segs && entry.track.segs.length) {
+      entry._orbitTrack = true;
+      // 轨迹段覆盖域之外的顶点（时间域两端半个公转周期内）回退根数外推：
+      // track.at 越界会把顶点钳制堆积在段端点，环的远半圈塌缩
+      if (entry._trackLo === undefined) {
+        let tLo = Infinity, tHi = -Infinity;
+        for (const sg of entry.track.segs) {
+          if (sg.t0 < tLo) tLo = sg.t0;
+          const sgEnd = sg.t0 + sg.dt * (sg.n - 1);
+          if (sgEnd > tHi) tHi = sgEnd;
+        }
+        entry._trackLo = tLo;
+        entry._trackHi = tHi;
+      }
+      for (let i = 0; i < N; i++) {
+        const ti = t0 + i * dtV;
+        if (ti < entry._trackLo || ti > entry._trackHi) blendPosAtTime(entry, ti, _v);
+        else entry.track.at(ti, _v);
+        const w = eclToThree(_v);
+        attr.setXYZ(i, w[0], w[1], w[2]);
+      }
+    } else {
+      entry._orbitTrack = false;
+      for (let i = 0; i < N; i++) {
+        blendPosAtTime(entry, t0 + i * dtV, _v);
+        const w = eclToThree(_v);
+        attr.setXYZ(i, w[0], w[1], w[2]);
+      }
     }
     attr.needsUpdate = true;
     entry._orbitEpoch = t;
   }
-  /* 当前历元椭圆上 M(t) 相位处的位置——与最后一次几何重建【同一关键帧】
-   * 外推（entry._orbitK；未重建过时取前一帧）。逐帧平移修正 Δ = 实际历表位置
-   * − 该帧椭圆位置因此帧间连续，不再随最近帧翻转跳变。 */
+  /* 根数回退路径用：当前时刻的根数预测位置（关键帧混合，与几何重建同源）。
+   * 仅当天体无历表轨迹段时才走此路径计算平移修正 Δ。 */
   function ellipsePosEcl(entry, t, out) {
     const els = entry.elems;
     if (!els || els.n < 2) return false;
-    const k = entry._orbitK !== undefined ? entry._orbitK : elemsKeyLo(entry, t);
-    const o = k * 8;
-    const v = elemPosEcl(els.eV[o], els.eV[o + 1], els.eV[o + 2], els.eV[o + 3],
-      els.eV[o + 4], els.eV[o + 5], els.eV[o + 6], els.eV[o + 7],
-      els.eV[o + 3] + els.eV[o + 2] * (t - els.eT[k]));
-    out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
+    blendPosAtTime(entry, t, out);
     return true;
   }
 
@@ -774,6 +854,10 @@
     scene.add(sunLight);
     ambient = new THREE.AmbientLight(0x28324a, 0.05);
     scene.add(ambient);
+    // 星光环境底（真 HDR 管线，仅真实光照+HDR 生效）：本影纯黑 ×曝光仍是 0，
+    // 给测光链/夜面一点真实微光内容（强度 hdrCfg.star，updateHdrExposure 逐帧门控）
+    starAmb = new THREE.AmbientLight(0x44546e, 0);
+    scene.add(starAmb);
     registry.set('__sunLight', { light: sunLight, ambient });
 
     // —— 飞船自阴影（真实光照模式，item：实时遮挡关系）——
@@ -844,8 +928,74 @@
     if (!on && window.CassiniModel) {
       window.CassiniModel.setShine(null, null, 0);
       window.CassiniModel.setProbeShine(null, null, 0);
+      window.CassiniModel.setReflections(null);
+      window.CassiniModel.setProbeReflections(null);
+    }
+    // 实时环境反射仅真实模式：开启即建 cube 相机并挂 envMap（下一帧 updateRender
+    // 前的 bakeLiveEnv 完成首烘），关闭回退静态星空 env
+    liveEnvOn = on;
+    if (on) {
+      ensureLiveEnv();
+      liveEnvFrame = -1e9;
+    }
+    if (window.CassiniModel) {
+      window.CassiniModel.setLiveEnv(on ? liveCubeRT.texture : null);
     }
     if (window.CassiniModel) window.CassiniModel.setSunMode(on);
+  }
+
+  /* —— 实时环境反射（方案 B：CubeCamera 场景烘焙）——
+   * 真实光照模式下把「可反射集」（层 3：行星/卫星/环/天空球/星点云）从飞船
+   * 位置烘进 128px cube RT 挂为飞船材质 envMap——金属映出带细节的真实画面
+   * （地球云形/大陆、土星环条纹、银河带），随视角逐像素滑动（envmap 反射
+   * 向量随相机），随飞船位置逐帧更新。要点：
+   *  - 层隔离：飞船本体/轨迹线/标记留在层 0，cube 相机只见层 3 → 不映出自身，
+   *    轨迹线不穿帮；太阳日面不入 cube——日面镜像仍由解析 glint 承担（128px
+   *    下日盘 aliasing），两者不双计。
+   *  - 编码：item 1 补丁令全部 lit 材质渲 RT 时输出 LinearTosRGB，cube 内容
+   *    与 rtScene 同为 sRGB 编码值；r147 PMREM 卷积不做解码，与静态星空 env
+   *    （sRGB 画布直挂 PMREM）同语义，观感一致。HalfFloat 承载 >1 亮度免削顶。
+   *  - PMREM：CubeCamera.update 结束自动置 needsPMREMUpdate，three 用 WeakMap
+   *    缓存的 RT 就地重卷积并复用（vendored r147 已验证）——材质 envMap 纹理
+   *    对象恒定，逐次烘焙不触发重编译。
+   *  - 频率：每 LIVE_ENV_EVERY 帧一烘（环境像只依赖飞船位置与行星自转，与
+   *    相机无关，相机转动由着色端反射向量天然承接）；飞船不可见跳过；浮点
+   *    RT 不可用（WebGL1）退 8-bit。
+   *  - 与解析项分工：liveEnv 启用期间解析行星盘反射（updateCraftReflections）
+   *    关闭避免双计（云形/环细节由 cube 承担）；解析 glint 保留。
+   *  - 近似：环的前向散射等以主相机视角解算的 uniform 在 cube 各面沿用
+   *    （cube 原点=飞船位置，与飞船所见一致）；大气 halo 壳不入层 3（其视图
+   *    空间太阳方向 uniform 在 cube 视角下方向错误，宁可缺省）。 */
+  const LIVE_ENV_SIZE = 128, LIVE_ENV_EVERY = 3;
+  let liveCubeRT = null, liveCubeCam = null, liveEnvFrame = -1e9;
+  let liveEnvOn = false;       // 实时环境反射开关（setRealisticLighting 切换）
+
+  function ensureLiveEnv() {
+    if (liveCubeRT) return;
+    const gl2 = renderer.capabilities && renderer.capabilities.isWebGL2;
+    liveCubeRT = new THREE.WebGLCubeRenderTarget(LIVE_ENV_SIZE, {
+      type: gl2 ? THREE.HalfFloatType : THREE.UnsignedByteType,
+    });
+    liveCubeRT.texture.encoding = THREE.sRGBEncoding;
+    liveCubeCam = new THREE.CubeCamera(0.002, SKY_R * 1.3, liveCubeRT);
+    for (const c of liveCubeCam.children) {
+      if (c.isPerspectiveCamera) c.layers.set(3);   // 仅渲染「可反射集」（层 3）
+    }
+    scene.add(liveCubeCam);
+    // 光源收集同样按相机 layer 过滤（projectObject: light.layers.test(camera.layers)）
+    // ——cube 相机层 3 收不到层 0 光源，行星会全黑；给太阳点光/环境光开层 3
+    //（主相机层 0 与其共享位，收集不受影响；层 1/2 掩膜趟原本就不收层 0 光）
+    sunLight.layers.enable(3);
+    ambient.layers.enable(3);
+  }
+
+  function bakeLiveEnv() {
+    if (!liveEnvOn || !liveCubeRT || !cassiniModel.visible) return;
+    if (frameCount - liveEnvFrame < LIVE_ENV_EVERY) return;
+    liveEnvFrame = frameCount;
+    // 浮动原点：场景逐帧以相机为原点重建，飞船的场景系位置即 cassiniModel.position
+    liveCubeCam.position.copy(cassiniModel.position);
+    liveCubeCam.update(renderer, scene);
   }
 
   // ---------- sky sphere（低亮度真实天空球 + 恒星点云） ----------
@@ -874,7 +1024,11 @@
       let u = Math.atan2(z, -x) / TAU; if (u < 0) u += 1;
       return [u * W, (theta / Math.PI) * H];
     };
-    // 银河带弥散微光（真实银道几何，低亮度软斑——仅极淡痕迹，不凸显银河）
+    // 银河带弥散微光（真实银道几何，低亮度软斑——仅极淡痕迹，不凸显银河）。
+    // alpha 标定：带内 15k 精灵沿银道面密集重叠（平均 ~30 个/像素），累积亮度
+    // ∝ alpha×重叠数——0.012 时画布峰值实测 (71,73,81)，渲染端再有 ~2× 增幅，
+    // 银河变成显眼亮带/斑块（2026-10-06 用户报「星空渲染错误」）。0.002 使
+    // 画布峰值 ~12（极淡），渲染后隐约可辨、不抢主体。
     if (cat && cat.bandN) {
       const bxyz = b64ToFloat32(cat.bandXyz);
       const bb = b64ToFloat32(cat.bandB);
@@ -882,7 +1036,7 @@
       const S = 30;
       for (let i = 0; i < cat.bandN; i++) {
         const [px, py] = project(bxyz[i * 3], bxyz[i * 3 + 1], bxyz[i * 3 + 2]);
-        const a = bb[i] * 0.012;
+        const a = bb[i] * 0.002;
         if (a < 0.001) continue;
         ctx.globalAlpha = a;
         ctx.drawImage(sp, px - S / 2, py - S / 2, S, S);
@@ -897,14 +1051,37 @@
     // 反射真实银河带，替代程序化假星空；envMap 在材质增强时经 PMREM 过滤）
     if (window.CassiniModel && window.CassiniModel.setEnvironment) {
       window.CassiniModel.setEnvironment(cv);
+      // HDR 自适应曝光：飞船材质绑定同一组 uniform（hdrU 注释；引用共享，
+      // 晚于此调用的材质首次编译时读取）
+      if (window.CassiniModel.setHdrUniforms) window.CassiniModel.setHdrUniforms(hdrU);
     }
-    const mat = new THREE.MeshBasicMaterial({
-      map: tex, side: THREE.BackSide, depthWrite: false, fog: false,
+    /* 天空球材质必须是 ShaderMaterial（2026-10-06）：MeshBasicMaterial 走内置
+     * encodings_fragment 补丁（LinearTosRGB），而画布纹理的 sRGB 解码在实测中
+     * 未生效（canvas 81 → 渲染 153）——银河带被双重编码放大 ~2×，叠加烘焙端
+     * 精灵重叠累积超标，用户端报「星空渲染错误」。ShaderMaterial 不含该 chunk
+     * （文件头补丁注释同款契约），画布 sRGB 值恒等直出：回退路径 = 画布原值；
+     * RT 管线路径输出即 rtScene 契约的 sRGB 编码值，合成期恒等通过（20261010c
+     * 起合成与回退 HDR_LUMA 同构，不再做 sRGB 解码/编码）。 */
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { map: { value: tex } },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform sampler2D map;
+        varying vec2 vUv;
+        void main() {
+          gl_FragColor = texture2D(map, vUv);
+        }`,
+      side: THREE.BackSide, depthWrite: false, fog: false,
     });
-    mat.toneMapped = false;
     skyMesh = new THREE.Mesh(new THREE.SphereGeometry(SKY_R, 64, 32), mat);
     skyMesh.renderOrder = -10;
     skyMesh.frustumCulled = false;
+    skyMesh.layers.enable(3);   // 层 3 = 实时环境反射集（bakeLiveEnv）
     scene.add(skyMesh);
     buildSkyStars(cat);
   }
@@ -940,11 +1117,12 @@
     geo.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
     geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
     const mat = new THREE.ShaderMaterial({
-      uniforms: { uPixelRatio: { value: renderer.getPixelRatio() } },
+      uniforms: { uPixelRatio: { value: renderer.getPixelRatio() }, uStarDim: { value: 1 } },
       vertexShader: `
         attribute vec3 aColor;
         attribute float aSize;
         uniform float uPixelRatio;
+        uniform float uStarDim;
         varying vec3 vColor;
         void main() {
           vColor = aColor;
@@ -952,7 +1130,8 @@
           gl_PointSize = aSize * uPixelRatio;
         }`,
       fragmentShader: `
-        varying vec3 vColor;
+        uniform float uStarDim;   // 声明须在片元——HDR v1 曾漏声明致 program 编译失败，
+        varying vec3 vColor;      // 无效 useProgram 回退旧程序画星点 → WebKit 蓝带垃圾渲染
         void main() {
           vec2 pc = gl_PointCoord - 0.5;
           float d2 = dot(pc, pc) * 4.0;    // 0 圆心 → 1 圆缘
@@ -961,7 +1140,7 @@
           float disc = 1.0 - smoothstep(0.30, 0.95, d2);
           float halo = exp(-d2 * 5.5) - exp(-5.5);
           float fall = 0.75 * disc + 0.45 * halo;
-          gl_FragColor = vec4(max(vColor, 0.0) * max(fall, 0.0), 1.0);
+          gl_FragColor = vec4(max(vColor, 0.0) * max(fall, 0.0) * uStarDim, 1.0);
         }`,
       blending: THREE.AdditiveBlending,
       // transparent:false 使其归入不透明队列按 renderOrder 先于行星绘制，
@@ -971,8 +1150,14 @@
       depthTest: false,
     });
     const points = new THREE.Points(geo, mat);
+    starMat = mat;   // HDR 管线星点亮度杠杆（updateHdrExposure 逐帧门控）
     points.renderOrder = -9;   // 背景球(-10)之后、行星(0)之前
     points.frustumCulled = false;
+    // 星点云不入层 3（实时环境反射集，20261010e）：点大小是屏幕空间量
+    // （aSize×pixelRatio），128px cube 里 1.5 万颗加色星点逐 texel 堆积，
+    // 把整个天空在 cube 中点亮——金箔（metalness=1）反射出全向金色余辉，
+    // 即「深空段真实光照背光面依旧亮」（2026-10-06 用户报）的根源。
+    // 静态天空球（极暗）仍在层 3 承担底反射；行星盘镜像不受影响
     scene.add(points);
   }
   function rgbCss(c) {
@@ -1087,6 +1272,9 @@
         uFlat: { value: opt.flat || 0 },
         uPolar: { value: opt.polar || new THREE.Vector3(0, 1, 0) },
         uSunPos: { value: new THREE.Vector3() },
+        // 昼夜 wrap（cos 单位，opt.wrap ← def.atmoWrap）：亮弧越过晨昏线
+        // acos(−wrap)−90° 后归零——厚/浓大气散射把光绕得更远，逐星设定
+        uWrap: { value: opt.wrap || 0.15 },
         // 外视 limb 霾的双指数衰减尺度（1/R）：spread > 1 放慢衰减——浓霾
         // 天体（泰坦）光晕更厚更饱和，壳缘窗口仍归零
         uK1: { value: 200.0 / (opt.spread || 1) },
@@ -1110,6 +1298,7 @@
         uniform float uR; uniform float uI; uniform vec3 uColor;
         uniform float uEdge; uniform float uFlat; uniform vec3 uPolar;
         uniform vec3 uSunPos; uniform float uK1; uniform float uK2;
+        uniform float uWrap;
         uniform sampler2D uRingMap; uniform float uRingIn; uniform float uRingOut;
         varying vec3 vW; varying vec3 vBodyC;
         #include <common>
@@ -1168,10 +1357,13 @@
           // 整条地平带饱和成白墙；标高减半把亮带收紧到轮廓附近，天空只剩
           // 「稍微染色」（ShaderMaterial 无 encodings_fragment，输出为原始线性值）
           float g = uI * (gOut * win + inG * 8.0 * chord);
-          // 昼夜调制：片段在屏面上相对盘心的方向 = -nrm（nrm 指向中心，即从
-          // 盘缘指向盘心）——昼侧亮弧必须落在太阳一侧。场景为相机相对系，
-          // 太阳位姿逐帧注入；散射有 wrap（夜侧留 0.42 底），避免晨昏断崖
-          float day = clamp(-dot(nrm, normalize(uSunPos - vBodyC)) * 1.1 + 0.42, 0.0, 1.0);
+          // 昼夜调制（20261008b 重构）：晨昏线处满幅的暮光弧 + 夜侧线性衰减。
+          // 旧式「+uWrap 平推底值」在晨昏线处仅 29% 且拖到 wrap 角——夜侧挂
+          // 一条宽奶油雾晕（用户截图）。物理：limb 处视线切向穿过大气，掠射
+          // 照亮的暮光弧在晨昏线处最亮（真实土星/泰坦新月照均为亮边弧），
+          // 越过晨昏线后按 uWrap 逐星收口（土星 ~15° / 泰坦 ~27° / 火星 ~3°）
+          float tsun = -dot(nrm, normalize(uSunPos - vBodyC));
+          float day = tsun >= 0.0 ? 1.0 : clamp(1.0 + tsun / uWrap, 0.0, 1.0);
           // 近侧环按真实 alpha 衰减辉光：环物质（内缘 ≥1.11R）恒在壳（1.045R）
           // 之外，逐视线顺序必为【近侧环 → 大气弦 → 远侧环】——环平面穿越点
           // 参数 tR 落在壳远壁 tX 之前即近侧环，采样环径向 alpha 乘 (1−α)；
@@ -1276,12 +1468,23 @@
    * 供下方 dithering 加色同步遮暗——环影挡住的是整根大气柱，雾带（rim/wash）
    * 在光照管线之后加色，不受 reflectedLight 乘法影响，须显式乘环影因子。
    * 无环影天体（地球/金星/火星/土卫六）恒为 1.0，行为不变。 */
-  function applyAtmoRim(mat, def) {
+  function applyAtmoRim(mat, def, wrap, haze, tone) {
     const col = (c) => Array.isArray(c) ? new THREE.Color(c[0], c[1], c[2]) : new THREE.Color(c);
     mat.userData.atmoU = {
       uAtmoColor: { value: col(def.color) },
       uAtmoIntensity: { value: def.intensity },
       uAtmoPower: { value: def.power },
+      // 昼夜 wrap（cos 单位）：亮弧越过晨昏线 acos(−wrap)−90° 后归零，
+      // 按各天体大气厚度/密度逐星设定（def.atmoWrap，缺省 0.15 = 1 atm 基准）
+      uAtmoWrap: { value: wrap || 0.15 },
+      // limb 掠射雾化标定（def.atmoHaze）：τ = haze×(1/ndv−1)，τ=1 时雾化 63%
+      // （ndv=0.5，即盘面 ~87%R 处）。按大气密度/厚度逐星：金星 1.0 / 地球
+      // 0.35 / 火星 0.1 / 土星 0.6 / 泰坦 1.6
+      uAtmoHaze: { value: haze || 0.6 },
+      // 雾化目标色亮度（uAtmoColor × tone 再进 mix）：0.6 全局基准（地球实测
+      // 0.92R/盘心 1.17）；气态巨行星云顶反照率高、真实 limb 与盘面同亮，
+      // 土星单独提到 0.85（0.6 时实测 limb 只有盘心 64%，用户反馈边缘过暗）
+      uHazeTone: { value: tone || 0.6 },
       uSunDirView: { value: new THREE.Vector3(0, 0, 1) },
       uNightMap: { value: def.night ? loadTex(def.night.tex) : BLACK_TEX },
       uNightIntensity: { value: def.night ? def.night.intensity : 0 },
@@ -1301,24 +1504,69 @@
           vAtmoV = normalize(-atmoMv.xyz);`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>',
-          '#include <common>\nfloat _ringShadowF = 1.0;\nvarying vec3 vAtmoN;\nvarying vec3 vAtmoV;\nuniform vec3 uAtmoColor;\nuniform vec3 uSunDirView;\nuniform float uAtmoIntensity;\nuniform float uAtmoPower;\nuniform float uAtmoWash;\nuniform sampler2D uNightMap;\nuniform float uNightIntensity;\nuniform vec3 uSunsetColor;\nuniform float uSunsetIntensity;')
+          '#include <common>\nfloat _ringShadowF = 1.0;\nvarying vec3 vAtmoN;\nvarying vec3 vAtmoV;\nuniform vec3 uAtmoColor;\nuniform vec3 uSunDirView;\nuniform float uAtmoIntensity;\nuniform float uAtmoPower;\nuniform float uAtmoWash;\nuniform float uAtmoWrap;\nuniform float uAtmoHaze;\nuniform float uHazeTone;\nuniform sampler2D uNightMap;\nuniform float uNightIntensity;\nuniform vec3 uSunsetColor;\nuniform float uSunsetIntensity;')
         .replace('#include <dithering_fragment>', `
           #include <dithering_fragment>
           {
             vec3 N = normalize(vAtmoN), V = normalize(vAtmoV);
             vec3 S = normalize(uSunDirView);
             float nds = dot(N, S);
-            float rim = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), uAtmoPower);
-            float day = clamp(nds * 1.4 + 0.25, 0.0, 1.0);
+            float ndv = clamp(dot(N, V), 0.0, 1.0);
+            float rim = pow(1.0 - ndv, uAtmoPower);
+            // 晨昏调制（20261008c 修正）：大气亮度峰在晨昏线——掠射时穿过大气
+            // 的路径最长、散射最强（真实土星/泰坦新月照的亮边弧），不能在晨昏线
+            // 归零（20261008b 的 smoothstep(0,…) 把暮光弧压灭，用户反馈边缘过暗）。
+            // 夜侧越过 ~wrap/2 后归零（土星 ~7°、泰坦 ~13°），不留夜侧雾晕；
+            // 昼侧在 +0.4w 处即满幅。地表本体（贴图 Lambert）仍由光照自然变暗，
+            // 这里只调大气分层（rim/wash/雾纱）——夜侧干净与暮光弧兼得
+            float day = smoothstep(-uAtmoWrap * 0.5, uAtmoWrap * 0.4 + 0.02, nds);
+            // 夜侧尾巴物理衰减（20261010k）：smoothstep 线性尾在 wrap=0.26 时把
+            // haze 混色（目标 cream×tone1.5）拖到 −0.13 nds 深处、越靠 limb 越厚
+            // （τ∝1/ndv），相位 ~83–105° 视角下夜侧出现 40px+ 亮楔（实测楔区
+            // base 64.7 vs 关大气 22.8，haze 占 33/42）。真实暮光弧是贴晨昏线的
+            // 细弧——太阳落后高层散射亮度指数衰减。exp 项在 nds≥0 恒为 1（昼侧
+            // 与晨昏线峰值逐位不动，20261008c 亮边弧保留），nds=−w/2 处 ×0.05。
+            day *= exp(min(nds, 0.0) * 6.0 / max(uAtmoWrap, 1e-3));
             // 夜面城市灯光：越过晨昏线（法线背向太阳）淡入
             float nightF = 1.0 - smoothstep(-0.14, 0.06, nds);
             gl_FragColor.rgb += texture2D(uNightMap, vUv).rgb * (uNightIntensity * nightF);
             // 边缘光昼侧着大气色，晨昏线附近混入日落色
             float sunset = uSunsetIntensity * pow(clamp(1.0 - abs(nds), 0.0, 1.0), 3.5);
             vec3 atmo = mix(uAtmoColor, uSunsetColor, clamp(sunset, 0.0, 1.0));
-            // wash：昼面常数薄雾——把整盘往大气色抬（淡蓝观感）；rim 只够到盘缘
-            // 环影暗带上的雾柱同被环遮挡：加色须乘 _ringShadowF（见函数头契约）
-            gl_FragColor.rgb += atmo * ((rim * uAtmoIntensity + uAtmoWash) * day) * _ringShadowF;
+            // limb 掠射雾化：视线越贴行星边缘，穿过大气层的柱长越厚——平面平行
+            // 近似柱长 ∝ 1/ndv（真实球面为 Chapman 函数，limb 处更厚，此处取
+            // 下限观感）。指数雾化把盘面贴图向大气色过渡：ndv=1（盘心）τ=0 贴图
+            // 原样；ndv→0（limb）τ→∞ 贴图完全让位于大气——贴图与大气在边缘
+            // 无缝交接，不再出现「贴图一直顶到轮廓 + 外挂光晕」的断层感。
+            // uAtmoHaze 按大气密度/厚度逐星标定（金星 1.0 / 地球 0.35 / 火星
+            // 0.1 / 土星 0.6 / 泰坦 1.6）；下限 0.02 防掠射除除零爆 exp
+            float tau = uAtmoHaze * (1.0 / max(ndv, 0.02) - 1.0);
+            // 昼侧才雾化（夜侧无散射源）；雾柱同受环影遮挡（rsF，见下）
+            float haze = (1.0 - exp(-tau)) * day;
+            // 环影×晨昏线衔接（20261010a）：大气柱不完全被环影遮挡——霾柱向上
+            // 延伸到影高之上（环厚 km 级 vs 大气标高百 km，柱上部仍被照亮）；
+            // 且近晨昏线处掠射光路不穿环面，抑制应随直射光强度淡出。无此软化时
+            // 影带对比度保持满幅直到 day→0 突然消失，与夜侧形成硬切（用户截图
+            // 的衔接痕）。柱内保留 45%，晨昏线 ±0.35 nds 内淡出到不抑制
+            float rsF = mix(1.0, mix(1.0, _ringShadowF, 0.55), smoothstep(0.0, 0.35, nds));
+            // 雾化目标色压暗（uHazeTone，逐星）：大气柱散射进视线的亮度与地表
+            // 同量级——uAtmoColor 含 HDR 分量（地球蓝通道 1.5），不压暗会把
+            // 过渡带抬成比地表还亮的白墙（实测 0.92R/盘心 = 1.47×）；0.4 把
+            // 土星 limb 压到盘心 47%（过暗）。逐星 tone：地球 0.6 / 土星 1.5
+            // 入射光调制（20261010k）：散射亮度必须随入射光衰减——真实新月照的
+            // 角尖（limb∧terminator，a→0）是渐暗收细的，而 haze 混色目标恒为
+            // cream×tone1.5，a≈0.2–0.4 的近晨昏线 limb 被抬到比日面盘心还亮
+            // （实测 ~230），相位 ~83–105° 视角读作「亮楔」（楔区 64.7 vs 无大气
+            // 22.8，haze 占 33/42）。litW=a^0.65：subsolar limb（a≈1）逐位不动
+            // （tone 标定基准），晨昏线 limb 弧降至 ~45% 仍有可见亮弧（20261008c
+            // 保留），角尖自然收细。指数 0.65 与直射包络 f=a^1.2 同族（散射∝光照）。
+            float litW = pow(clamp(nds, 0.0, 1.0), 0.65);
+            gl_FragColor.rgb = mix(gl_FragColor.rgb, atmo * uHazeTone * rsF * litW, haze);
+            // rim/wash 独立加色（曾乘 (1−haze) 求能量守恒——实测把土星 limb
+            // 压暗到 0.47×盘心，用户反馈边缘过暗；菲涅尔 rim 本就是 limb 专属
+            // 项，与雾化分层表达不同散射路径，不重复抑制，仅靠 uHazeTone 控总亮）
+            gl_FragColor.rgb += atmo * ((rim * uAtmoIntensity + uAtmoWash) * day)
+              * rsF * litW;
           }`);
     };
     mat.customProgramCacheKey = () => 'atmo-rim';
@@ -1367,12 +1615,112 @@
    * 仍命中且位于 rim 块之前——rim 的加色不参与压肩（大气辉光本属加色语义）。
    * tag 防 program 缓存错配（同 excludeDirLight 契约）。 */
   const shoulderMats = [];
-  const SHOULDER_GLSL = `
+  /* —— HDR 自适应曝光（设置开关，与软肩共用注入点/材质集）——
+   * 开启（uHdrOn>0.5）时接管显示变换：显示空间先乘 uExposure（updateRender
+   * 逐帧按「视野内容亮度估计」自动调节，模拟人眼/相机自适应），再过 ACES
+   * 拟合曲线（Narkowicz 每通道近似）压回 [0,1]——亮部获得滚降层次、暗部随
+   * 曝光抬升。关闭时走原软肩分支（膝点 0.78 削顶修复），逐位回退。uniform
+   * 切换无重编译（同 uEclipse 契约）。
+   * 作用面 = 软肩材质集：行星/卫星表面 + 云层 + 环（applySoftShoulder 调用点）；
+   * 大气 rim/wash 与 bloom 光晕的加色在本块之后叠画，不参与曝光（加色语义，
+   * 与 rim 不参与压肩同一契约）；太阳盘面材质不参与——日面恒为显示上限，
+   * 曝光下调时周围景物压暗、日面不动（HDR 语义：看向太阳时其余景物正确
+   * 变暗，而非全屏泛白）。飞船模型材质经 CassiniModel.setHdrUniforms 绑定
+   * 同一组 uniform（掩食特写时船体随曝光抬升，item 7 残差环照由此可辨）。
+   * 亮度估计与目标均衡点见 updateHdrExposure 注释。 */
+  const hdrU = {
+    uHdrOn: { value: 0 },
+    uExposure: { value: 1 },
+  };
+  /* 真 HDR 管线标定（可经 CassiniScene.hdrCfg 运行时调整/探针标定）。
+   * 2026-10-06 重标（测光链单像素 bug 修复 + 银河带调暗 8× 后的均衡重建）：
+   * 10 场景 64² 测光统计实测（.workbuddy/tools/probe_lumstats.js）表明
+   * 「掩食夜面 ≈ 天空背景 ≈ 逐像素地板（0.0022）」——纯光度学无法区分
+   * 「该抬升的夜面」与「不该抬升的空天」，故测光采用**中心加权**（摄影标准）：
+   * meter = 0.5×全幅均值 + 0.5×中心 50% 均值；曝光 = key / max(meter, anchor)。
+   * key = 0.074 —— 均衡点：土星/地球/土卫六昼面特写 → E 0.9~1.3；掩食
+   *   （meter 0.027）→ 2.7（夜面 + 环背散射抬升，用户核心诉求「夜面有感」）；
+   * anchor = 0.046 —— 暗景锚点：meter 低于此视为「深空为主视角」，增益封顶
+   *   E≈1.6——远距小天体/空天/飞船特写不被黑色背景推到 max（4.0）而吹爆
+   *   辉光壳与大气 wash（「太阳/大气/飞船环境光异常」的根因之一）；
+   * keyA/anchorA —— 解析回退路径（无浮点 RT，WebKit 内嵌预览）同构标定：
+   *   解析模型无环/无中心权重（粗模型），常数独立标定使两路径同视角 E 同量级；
+   * lumFloor = 0.0022 —— 深空地板（测光 shader 逐像素下限，链内保留）；
+   * clamp [0.6, 4.0] / τ=0.5s；ev —— 手动补偿（±2 EV，合成 shader 乘 2^ev）；
+   * star = 0.006 —— 星光环境底强度（仅真实光照+HDR 生效）。 */
+  const hdrCfg = {     key: 0.074, anchor: 0.046,       // 帧测光兜底（聚焦目标不存在时，实践几乎不可达）
+    keyS: 0.35, anchorS: 0.22,       // 聚焦盒实测（RT）：probe_subject 标定。
+                                        // anchorS 0.13→0.22（20261009b）：与解析路径
+                                        // anchorAS 对齐——旧值使残月/背光视角盒均值
+                                        // 被黑空稀释后（lumS≈0.17）E 顶格 2.69，残月
+                                        // 与环亮弧整体吹爆成无衰减白块（用户复报的
+                                        // 「光晕一块」「色彩失真」主因，rt_norm_a 复现）
+    keyA: 0.017, anchorA: 0.011,
+    keyAS: 0.35, anchorAS: 0.22,        // 解析相位模型：lit 盘面 0.35→E 1.0；
+                                        // anchor 0.22 → 暗面/掩食封顶 E≈1.6（与 RT 一致）
+    lumFloor: 0.0022, min: 0.6, max: 4.0, tau: 0.5, ev: 0, star: 0.006,
+    nightFill: 1.0,                     // 夜面星光底补偿——用户裁决「暗面云层不要提亮」，恒 1 关闭
+    bloomT: 0.8, bloomT2: 0.92, bloomG: 0.55 };  // 过亮提取阈值（RT 线性域/回退 canvas sRGB 域）与增益。
+                                        // bloomT2 0.85→0.92：旧值作用在 canvas 域（≈线性 0.69），
+                                        // 土星昼面盘面 240+ 整面被提取进 bloom——「白蛋」+「光晕一块」根因
+  const LUM_FLOOR = hdrCfg.lumFloor;   // 测光 shader 模板引用（声明序须在此之前）
+  /* 帧间状态：hdrEnabled=用户开关；hdrPathOn=上一帧 HDR RT 管线是否激活
+   * （renderPost 写，本帧 updateRender 读——1 帧延迟，测光标准做法）；
+   * hdrLum=上一帧实测平均亮度（线性，测光链 1×1 readback，-1=尚无读数）。 */
+  let hdrEnabled = false, hdrPathOn = false, hdrLum = -1, hdrLumS = -1, hdrLastNow = 0;
+  const _lumBuf = new Float32Array(4);          // （保留：兼容旧探针）
+  const _lumBuf64 = new Float32Array(64 * 64 * 4);   // 测光 64² readback（16KB，隔帧）
+  /* 聚焦天体测光盒（updateHdrSubject 每帧投影写入，renderPost 采样读）：
+   * u0/u1/v0/v1 = 64² 测光图上的盒（GL uv，v=1 画面顶）；big = 角半径 ≥6px
+   *（亚像素目标——远距太阳等——64² 图采样不到，走解析相位模型）；
+   * lit = 聚焦天体受照比（Lambert 相位），驱动夜面星光底补偿。 */
+  const _hdrSubject = { on: false, u0: 0, u1: 0, v0: 0, v1: 0, big: false, lit: 1 };
+  const _copyPos = new THREE.Vector2(0, 0);     // copyFramebufferToTexture 源点
+  let starAmb = null, sunMat = null, sunMatBase = null;
+  let starMat = null;   // 星点材质（HDR 管线亮度杠杆，见 updateHdrExposure）
+  /* 两个注入块（2026-10-06 拆分）：
+   * SHOULDER_NORM —— 普通模式软肩（削顶修复），恒锚 dithering 前；
+   *   大气 rim/wash 加色不参与压肩（原契约不变）。
+   * HDR_EXPO —— HDR 曝光+ACES。无大气材质锚 dithering 前（原位）；带大气
+   *   材质（地球/金星/火星/土卫六 surfMat）改锚在 applyAtmoRim 的 wash 加色
+   *   块之后——旧插法使 wash/rim/夜灯 逃逸曝光与色调映射，回退路径远观行星
+   *   亮面被 wash 叠加推过 255（RT 管线全画面统一色调映射无此问题，2026-10-06
+   *   用户报「视角小的时候过曝」）。运行时探测大气块尾串选锚，注册顺序
+   *   （applyAtmoRim 先于本函数）保证探测时文本已在。 */
+  const SHOULDER_NORM = `
           {
             float _m = max(gl_FragColor.r, max(gl_FragColor.g, gl_FragColor.b));
             if (uShoulder > 0.5 && _m > 0.78) {
               float _f = 0.78 + 0.22 * (1.0 - exp(-(_m - 0.78) / 0.22));
               gl_FragColor.rgb *= _f / _m;
+            }
+          }`;
+  /* 亮度保持 ACES + 抖动（回退路径注入共用体，20261008e）：旧逐通道实现在暗部
+   * 把通道比例撕碎——土星暗面 (168,166,29) 霓虹绿 / (101,26,30) 暗红（用户截图
+   * 取证），RT 合成侧 20261007l 已改 luma 缩放、回退侧漏改。抖动 /255 治暗部
+   * 8-bit 色带。两块作用域均为 sRGB 编码域（dithering 锚在 encodings 之后）——
+   * 域虽「错」但自 20261006f 起常数按此域标定，保持契约不改域。 */
+  const HDR_LUMA = `
+            vec3 _c = gl_FragColor.rgb * uExposure;
+            float _l = dot(_c, vec3( 0.2126, 0.7152, 0.0722 ));
+            float _t = clamp((_l * (2.51 * _l + 0.03)) / (_l * (2.43 * _l + 0.59) + 0.14), 0.0, 1.0);
+            vec3 _tm = _c * (_t / max(_l, 1e-4));
+            float _n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+            gl_FragColor.rgb = clamp(_tm, 0.0, 1.0) + (_n - 0.5) / 255.0;`;
+  const HDR_EXPO = `
+          {
+            if (uHdrOn > 0.5) {${HDR_LUMA}
+            }
+          }`;
+  const SHOULDER_GLSL = `
+          {
+            if (uHdrOn > 0.5) {${HDR_LUMA}
+            } else {
+              float _m = max(gl_FragColor.r, max(gl_FragColor.g, gl_FragColor.b));
+              if (uShoulder > 0.5 && _m > 0.78) {
+                float _f = 0.78 + 0.22 * (1.0 - exp(-(_m - 0.78) / 0.22));
+                gl_FragColor.rgb *= _f / _m;
+              }
             }
           }`;
   function applySoftShoulder(mat, tag) {
@@ -1382,9 +1730,24 @@
     mat.onBeforeCompile = (shader, r) => {
       if (prevCompile) prevCompile(shader, r);
       shader.uniforms.uShoulder = mat.userData.shoulderU;
+      shader.uniforms.uHdrOn = hdrU.uHdrOn;
+      shader.uniforms.uExposure = hdrU.uExposure;
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform float uShoulder;')
-        .replace('#include <dithering_fragment>', SHOULDER_GLSL + '\n#include <dithering_fragment>');
+        .replace('#include <common>', '#include <common>\nuniform float uShoulder;\nuniform float uHdrOn;\nuniform float uExposure;');
+      /* 大气 wash 块尾串（applyAtmoRim 模板内唯一）：SHOULDER_NORM 仍在
+       * dithering 前（rim 不参与压肩契约不变），HDR_EXPO 插到 wash 块后 */
+      const A_TAIL = 'uAtmoWash) * day) * _ringShadowF;';
+      const fs0 = shader.fragmentShader
+        .replace('#include <dithering_fragment>', SHOULDER_NORM + '\n#include <dithering_fragment>');
+      const i0 = fs0.indexOf(A_TAIL);
+      if (i0 >= 0) {
+        const j0 = fs0.indexOf('}', i0 + A_TAIL.length);
+        if (j0 >= 0) {
+          shader.fragmentShader = fs0.slice(0, j0 + 1) + '\n' + HDR_EXPO + fs0.slice(j0 + 1);
+          return;
+        }
+      }
+      shader.fragmentShader = fs0.replace(SHOULDER_NORM + '\n#include <dithering_fragment>', SHOULDER_GLSL + '\n#include <dithering_fragment>');
     };
     const prevKey = mat.customProgramCacheKey;
     mat.customProgramCacheKey = () =>
@@ -1405,8 +1768,10 @@
    * 亮缘（>0.5）逐位不变，晨昏线明暗界线明显贴紧几何晨昏线。风格化宽度，
    * 近似真实影像中「暗部 S 曲线 + 地表散射吃掉暮色」的观感；不做逐日距
    * 解算（各行星 θs 全部远低于下限）。
-   * 门禁：效果类 → uPenOn 仅真实光照置 1/0（updateRender 逐帧刷新，
-   * uSatShade 同款；uPenOn=0 时 mix 回 1.0，off 路径逐位回退）。
+   * 门禁（20261010h 双路径）：大气天体 uPenMode=1 → 直射乘真实包络压暗
+   * f=pow(a,1.2)（20261010j 显示域线性律，见下），双模式一致；
+   * airless uPenMode=0 → 原 smoothstep(-PEN_W,PEN_W) 半影仅真实光照启用
+   * （uPenOn，updateRender 逐帧刷新；普通模式 mix 回 1.0 逐位回退）。
    * 注入：链在 excludeDirLight 之后（行星直射只剩太阳点光），此时 fragment
    * 内 '#include <lights_fragment_begin>' 已被 prev 展开为 LF_BEGIN_NODIR
    * 全文——直接以该文本串为锚替换为附加半影行的 LF_BEGIN_PEN；仅点光块
@@ -1415,10 +1780,30 @@
    * 表面与云层；环材质着色含自身晨昏语义、大气 rim/wash 自带 smoothstep
    * 昼夜权重，均不参与。 */
   const PEN_W = 0.35;
+  /* 20261010j：大气天体包络改「显示域线性律」f = pow(a, 1.2)（a=dotNL，直射
+   * total = a·f = a^2.2 经 sRGB γ2.2 编码后显示亮度 ≈ a——精确线性）。依据：
+   * 下载 PIA05425 原图（相位 95°，红光，图注 image scale 299 km/px → R_saturn
+   * = 201.6 px，与环跨距反推 R≈201 双重印证）逐点测量真实晨昏剖面：a=0.8/0.6/
+   * 0.4/0.2/0.1 处显示亮度 0.66/0.49/0.38/0.17/0.03 ≈ 线性律（D≈a），且噪声底
+   * 落在几何晨昏线上——20261010h 注释的「几何晨昏线前 ~0.3R 即落入噪声底」
+   * 系盘心测错（环污染拟合得 R≈164，错 R 会把噪声点误推到晨昏线前 0.37R，
+   * 本轮首次拟合以同法翻车复现该错误）。「自 limb 起近线性递减」的原拟合描述
+   * 本身正确，但旧实现 f=mix(1,a²,smoothstep(0.55,0.15,a)) 保留 a>0.55 的
+   * Lambert 平台、再入 a³ 陡崖——「亮平台+陡崖」在贴环面视角（phi≈1.54，用户
+   * 截图）读作「上下亮（轮廓 rim 亮弧）中间暗（盘中部裸露陡崖）」的暗楔；
+   * 真实影像无平台，亮弦中段最宽（D 形）、向晨昏线平滑变暗。线性律同时修复：
+   * ① 楔块消失（显示亮区边缘 a≈0.15，中段 pinching 与真实一致）；
+   * ② 20261010h 的原始诉求（Lambert 中段 sRGB 膨胀「亮盘+硬边」）仍被抑制
+   *   （a=0.7 显示 0.7 而非 Lambert 的 0.9）；
+   * ③ subsolar（a≈1）f≈1 逐位不动，rim/wash/环影/凌日各链不变。
+   * 遗留校准点：PIA05425 为相位 95° 红光 + 轻度对比增强 JPEG，a<0.15 段实测
+   * 比线性律更陡（D(0.1)=0.03）；渲染含 wash/ambient 底亮，末端形态由二者
+   * 共同决定，未单独追加陡降项。无大气天体保持原 smoothstep 半影（真实光照）/
+   * 逐位回退（普通模式），uPenMode 门控。 */
   const LF_BEGIN_PEN = (() => {
     const out = LF_BEGIN_NODIR.replace(
       'getPointLightInfo( pointLight, geometry, directLight );',
-      'getPointLightInfo( pointLight, geometry, directLight );\n\t\t\tdirectLight.color *= mix( 1.0, smoothstep( - uPenW, uPenW, dot( geometry.normal, directLight.direction ) ), uPenOn );');
+      'getPointLightInfo( pointLight, geometry, directLight );\n\t\t\t{ float _pd = dot( geometry.normal, directLight.direction ); float _pa = max( _pd, 0.0 ); float _fA = pow( _pa, 1.2 ); float _fL = smoothstep( - uPenW, uPenW, _pd ); directLight.color *= uPenMode > 0.5 ? _fA : mix( 1.0, _fL, uPenOn ); }');
     if (out === LF_BEGIN_NODIR) console.warn('applyPenumbra: point light 锚点未命中');
     return out;
   })();
@@ -1426,6 +1811,7 @@
     if (!penU) penU = {
       uPenOn: { value: realisticOn ? 1 : 0 },
       uPenW: { value: PEN_W },
+      uPenMode: { value: 0 },
     };
     mat.userData.penU = penU;
     const prevCompile = mat.onBeforeCompile;
@@ -1435,7 +1821,8 @@
       if (fs === shader.fragmentShader) console.warn('applyPenumbra: LF_BEGIN_NODIR 锚点未命中', tag);
       shader.uniforms.uPenOn = penU.uPenOn;
       shader.uniforms.uPenW = penU.uPenW;
-      shader.fragmentShader = 'uniform float uPenOn;\nuniform float uPenW;\n' + fs;
+      shader.uniforms.uPenMode = penU.uPenMode;
+      shader.fragmentShader = 'uniform float uPenOn;\nuniform float uPenW;\nuniform float uPenMode;\n' + fs;
     };
     const prevKey = mat.customProgramCacheKey;
     mat.customProgramCacheKey = () =>
@@ -1709,6 +2096,7 @@
     applySoftShoulder(rm, 'ring'); // 环亮弧同受直射光削顶，一并压肩
     const ring = new THREE.Mesh(rg, rm);
     ring.rotation.x = Math.PI / 2;
+    ring.layers.enable(3);   // 层 3 = 实时环境反射集（bakeLiveEnv）：金箔映环条纹
     tiltGroup.add(ring);
     entry.ringMesh = ring;
     entry.ringTexture = rt;
@@ -1780,6 +2168,7 @@
         // 贴图亮度基础上整体提亮（>1 乘子压向饱和，亮黄盘面→炽白黄）
         mat.color.setRGB(1.45, 1.32, 1.05);
         if (def.name === 'sun') {
+          sunMat = mat; sunMatBase = mat.color.clone();   // HDR 日面增益基色（×4 仅 16F RT 路径）
           // 盘缘增亮（参考图日缘偏白）：菲涅尔项注入，几何平滑无环状边界
           mat.onBeforeCompile = (shader) => {
             shader.vertexShader = shader.vertexShader
@@ -1806,17 +2195,17 @@
         const spec = loadTex('earthSpecular', aniso);
         mat = new THREE.MeshPhongMaterial({
           map: tex, specularMap: spec,
-          // 海洋镜面压到 ~3% 反光 + 窄高光（shininess 180）：只留日下点一点
+          // 海洋镜面压到 ~1.5% 反光 + 窄高光（shininess 180）：只留日下点一点
           // 极淡耀斑，背光视角不再出现成片白斑
-          specular: new THREE.Color(0x060a10), shininess: 180,
+          specular: new THREE.Color(0x030508), shininess: 180,
         });
-        applyAtmoRim(mat, def.atmo);
+        applyAtmoRim(mat, def.atmo, def.atmoWrap, def.atmoHaze, def.hazeTone);
         entry.atmoMat = mat;
       } else {
         mat = new THREE.MeshLambertMaterial({ map: tex });
         // 大气边缘光并入表面材质（地球/金星/火星/土卫六；不再使用独立大气壳）
         if (def.atmo) {
-          applyAtmoRim(mat, def.atmo);
+          applyAtmoRim(mat, def.atmo, def.atmoWrap, def.atmoHaze, def.hazeTone);
           entry.atmoMat = mat;
         }
       }
@@ -1833,7 +2222,9 @@
         // 10 km（R⊕=6371 km，仅 +0.16%）；同分段球面平行、法向间距恒定，
         // 对数深度缓冲下不会与地表深度冲突
         const ct = loadTex('earthClouds', aniso);
-        const cm = new THREE.MeshLambertMaterial({ map: ct, transparent: true, opacity: 0.9, depthWrite: false });
+        // opacity 1.0：透光度完全由云量贴图 alpha 决定——厚云处地表的海洋镜面
+        // 耀斑/城市灯光不再从云下透出，薄云仍按 alpha 部分透光（物理正确）
+        const cm = new THREE.MeshLambertMaterial({ map: ct, transparent: true, opacity: 1.0, depthWrite: false });
         const clouds = new THREE.Mesh(geo, cm);
         // 云层壳随扁率同压 Y 轴，极区与地表仍保持 ~10 km 间距
         clouds.scale.set(def.radius + 10, (def.radius + 10) * (1 - fl), def.radius + 10);
@@ -1885,6 +2276,9 @@
             color: haloDef ? haloDef.color : def.glow,
             intensity: haloDef ? haloDef.intensity : 0.95,
             flat: fl,
+            // 昼夜 wrap：def.atmoWrap（金星/地/火/木/土/泰坦逐星设定；
+            // 木星 glow-only 走顶层字段，其余缺省 0.15 = 1 atm 基准）
+            wrap: def.atmoWrap,
             polar: new THREE.Vector3(0, 1, 0).applyQuaternion(tiltGroup.quaternion).normalize(),
           }));
         halo.scale.set(def.radius * shell, def.radius * shell * (1 - fl), def.radius * shell);
@@ -1928,7 +2322,9 @@
           uInner: { value: sR.inner },
           uOuter: { value: sR.outer },
           uPlanetR: { value: def.radius },
-          uRingShadowDepth: { value: 1.0 },
+          // 影深 0.93：环非全黑遮板——B/A 环透光 1–7%，叠加 0.056° 太阳角径的
+          // 半影近似；全黑（1.0）会让影带与晨昏线衔接出硬切（20261010a）
+          uRingShadowDepth: { value: 0.93 },
         };
         // 链式补丁： Saturn 现带大气边缘光（applyAtmoRim 已占 onBeforeCompile /
         // customProgramCacheKey），须先执行前序注入再叠加环影，缓存键同步串联
@@ -1977,6 +2373,7 @@
       }
 
       entry.mesh = mesh;
+      if (def.name !== 'sun') mesh.layers.enable(3);   // 层 3 = 实时环境反射集（太阳日面不入 cube）
       entry.tiltGroup = tiltGroup;
       // 扁椭球遮挡参数：极轴（世界系，= tiltGroup +Y）与扁率——viewOccluded 的
       // 射线-椭球判定用（正球判定会让土星 f=0.098 的极区方向提前 ~10% 遮挡）
@@ -1988,8 +2385,16 @@
       if (!def.emissive) {
         excludeDirLight(mat);                             // 行星表面：忽略飞船平行光
         applySoftShoulder(mat, 'surf');                   // 高光软肩（削顶修复，仅真实光照）
-        // item 6 晨昏线半影：同一 penU 共享给表面/云层（updateRender 只刷一份）
-        const penU = { uPenOn: { value: realisticOn ? 1 : 0 }, uPenW: { value: PEN_W } };
+        // item 6 晨昏线半影：同一 penU 共享给表面/云层（updateRender 只刷一份）。
+        // 20261010h：大气天体（def.atmoWrap>0）uPenMode=1 → 直射乘真实包络压暗
+        // f=pow(a,1.2)（20261010j 显示域线性律，普通/真实光照一致，依据 PIA05425
+        // 实测，见 LF_BEGIN_PEN 注释）；airless uPenMode=0 → 原路径：真实光照
+        // smoothstep(-PEN_W,PEN_W) 半影、普通模式 uPenOn=0 逐位回退
+        const penU = {
+          uPenOn: { value: realisticOn ? 1 : 0 },
+          uPenW: { value: PEN_W },
+          uPenMode: { value: (def.atmoWrap || 0) > 0 ? 1 : 0 },
+        };
         entry.penU = penU;
         applyPenumbra(mat, 'surf', penU);
         if (entry.clouds) {
@@ -2040,11 +2445,15 @@
       labelsEl.appendChild(el);
       entry.labelEl = el;
 
-      // 缩小视角时的亮点标记（天体盘面 <3.5px 时出现）：太阳比行星更大更亮
+      // 缩小视角时的亮点标记（天体盘面 <3.5px 时出现）：太阳比行星更大更亮。
+      // 行星标记关深度测试（须盖过自身天体的近侧盘面，深度缓冲无法区分
+      // 「被自身盘面挡住」与「被前方物体挡住」）；太阳标记开——标记逐帧沿
+      // 视轴前移 1.05R 避开日面自遮挡（见 updateRender miniMarker 段），
+      // 遮挡关系全部交给深度缓冲逐像素判定，被飞船/行星半掩时平滑裁剪
       const isSun = def.name === 'sun';
       const mm = new THREE.SpriteMaterial({
         map: isSun ? dotTexture() : markerTexture(), transparent: true,
-        depthWrite: false, depthTest: !isSun,
+        depthWrite: false, depthTest: isSun,
         sizeAttenuation: true, opacity: isSun ? 1 : 0.85,
         blending: isSun ? THREE.AdditiveBlending : THREE.NormalBlending,
         color: isSun ? 0xffffff : 0xdce9ff,
@@ -2108,6 +2517,14 @@
       cassiniStack = parts.stack;
       cassiniOrbiter = parts.orbiter;
       huygensMesh = parts.probe;
+      // 飞船/探测器实体加入 bloom 掩膜遮挡通道（层 2）：太阳盘面/光晕壳被
+      // 船体挡住的部分不进 bloom 源，泛光不再透过船体显形（2026-10-06 用户
+      // 反馈「地球附近太阳透过卡西尼显示」——主渲染光晕壳有深度测试被船体
+      // 正确裁剪，掩膜却缺船体遮挡，bloom 合成又把泛光叠了回去）。模型隐藏
+      // （屏占 <1.1px）时 renderer 自动跳过，掩膜与主渲染遮挡语义保持一致
+      for (const g of [cassiniStack, cassiniOrbiter, huygensMesh]) {
+        if (g) g.traverse((o) => { if (o.isMesh) o.layers.enable(2); });
+      }
       if (cassiniStack) model.add(cassiniStack);
       if (cassiniOrbiter) model.add(cassiniOrbiter);
       if (huygensMesh) {
@@ -2569,7 +2986,9 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
         u.uSunPos.value.set(-camWorld.x, -camWorld.y, -camWorld.z);
         u.uPlanetPos.value.copy(entry.group.position);
       }
-      // 晨昏线半影（item 6）：门禁随模式切换（效果类仅真实光照，uSatShade 同款）
+      // 晨昏线半影（item 6）：uPenOn 仅 airless 路径消费（真实光照 1/普通 0，
+      // 普通模式逐位回退）；大气天体 uPenMode=1 双模式走真实包络压暗，
+      // uPenMode 构建期固定无需逐帧（20261010h）
       if (entry.penU) entry.penU.uPenOn.value = realisticOn ? 1 : 0;
       // 卫星凌日投影（item 3，见 applySatTransit 注释）：uSatShade 按门禁规则
       // 仅真实光照置 1/0；卫星场景系位置 = group.position（updatePositions 已更新）
@@ -2622,8 +3041,9 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     }
 
     // ---- 轨道线与行星严格重合（item 8）----
-    // 逐帧平移修正 Δ = 实际历表位置 − 密切椭圆位置；聚焦天体每帧相位中心化
-    // 重建（顶点落在行星上），其余每 15 天重建 + 平移修正。
+    // 环几何优先取历表轨迹（真路径，与天体渲染定位同源）——环心严格位于母体
+    // （Δ≡0）、交点亚 km，精度与重建节奏无关；无轨迹段的天体回退根数混合 +
+    // 平移修正 Δ。聚焦天体每帧重建，其余按陈旧度阈值重建（卫星即时、行星错峰）。
     const focusName = (window.CassiniCamera && window.CassiniCamera.currentFocus()) || null;
     const _act = [0, 0, 0], _ell = [0, 0, 0];
     let orbIdx = 0;
@@ -2640,30 +3060,50 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
       const okFade = smooth01((fO - ORBIT_FADE_F0) / (ORBIT_FADE_F1 - ORBIT_FADE_F0));
       entry.orbitLineObj.visible = okFade < 0.99;
       entry.orbitLineObj.material.opacity = entry.orbitBaseOp * (1 - okFade);
-      entry.track.at(t, _act);
-      if (!ellipsePosEcl(entry, t, _ell)) continue;
-      const dx = _act[0] - _ell[0], dy = _act[1] - _ell[1], dz = _act[2] - _ell[2];
-      const w = eclToThree([dx, dy, dz]);
-      if (entry.parent) {
-        const p = registry.get(entry.parent);
-        entry.orbitLineObj.position.set(
-          p.world[0] + w[0] - camWorld.x,
-          p.world[1] + w[1] - camWorld.y,
-          p.world[2] + w[2] - camWorld.z);
-      } else {
-        entry.orbitLineObj.position.set(
-          w[0] - camWorld.x, w[1] - camWorld.y, w[2] - camWorld.z);
-      }
+      /* 重建先于定位：重建只改几何、定位只改 position，两者解耦；但顺序保证
+       * 重建后本帧立即以新几何的姿态渲染。卫星陈旧度一超阈值立即重建、
+       * 不错峰——快进/倒退时每帧推进可达数日，环的「未来半圈」以陈旧时刻
+       * 为中心会逐渐偏离卫星当前相位（根数时代错峰窗口内 Δ 漂移曾把卫星环
+       * 整体推离土星 ~2×轨道半径，轨迹环下仅剩 ~0.1% 逐圈进动，仍即时重建
+       * 保新鲜）。行星轨道半径大、同等陈旧度偏差占比极小，保留 30 天强制 +
+       * 24 帧错峰（17 条线重建 <2ms）。 */
+      const orbitAge = entry._orbitEpoch === undefined
+        ? Infinity
+        : Math.abs(t - entry._orbitEpoch);
       if (name === focusName || forceOrbitRebuild) {
         rebuildOrbitLine(entry, t);
-      } else if (entry._orbitEpoch === undefined ||
-          Math.abs(t - entry._orbitEpoch) >
-            (entry.parent ? 86400 : 15 * 86400)) {
-        // 大跨度跳转（>30 天）立即全量重建（17 条线 ~4k 次开普勒解 <2ms）；
-        // 常规推进按 (frameCount+orbIdx) 错峰，每帧最多重建一条
-        if (entry._orbitEpoch === undefined ||
-            Math.abs(t - entry._orbitEpoch) > 30 * 86400 ||
-            (frameCount + orbIdx) % 24 === 0) rebuildOrbitLine(entry, t);
+      } else if (orbitAge > (entry.parent ? 86400 : 15 * 86400) &&
+          (entry.parent || orbitAge > 30 * 86400 ||
+           (frameCount + orbIdx) % 24 === 0)) {
+        rebuildOrbitLine(entry, t);
+      }
+      if (entry._orbitTrack) {
+        // 历表轨迹环：几何即真位置（与 updatePositions 的 entry.track.at 同源
+        // 逐位一致），定位 = 母体位置，无平移修正
+        if (entry.parent) {
+          const p = registry.get(entry.parent);
+          entry.orbitLineObj.position.set(
+            p.world[0] - camWorld.x, p.world[1] - camWorld.y, p.world[2] - camWorld.z);
+        } else {
+          entry.orbitLineObj.position.set(-camWorld.x, -camWorld.y, -camWorld.z);
+        }
+      } else if (entry.track) {
+        // 根数回退路径：Δ = 实际历表位置 − 混合预测位置，逐帧平移把交点
+        // 精确搬到天体上
+        entry.track.at(t, _act);
+        if (!ellipsePosEcl(entry, t, _ell)) continue;
+        const dx = _act[0] - _ell[0], dy = _act[1] - _ell[1], dz = _act[2] - _ell[2];
+        const w = eclToThree([dx, dy, dz]);
+        if (entry.parent) {
+          const p = registry.get(entry.parent);
+          entry.orbitLineObj.position.set(
+            p.world[0] + w[0] - camWorld.x,
+            p.world[1] + w[1] - camWorld.y,
+            p.world[2] + w[2] - camWorld.z);
+        } else {
+          entry.orbitLineObj.position.set(
+            w[0] - camWorld.x, w[1] - camWorld.y, w[2] - camWorld.z);
+        }
       }
       if (trailOptions.planetOrbits) applyOrbitFade(entry, t);
       orbIdx++;
@@ -2832,18 +3272,29 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
         const f = mp.size * Math.max(0, Math.min(1, 1 - angPx / 3.5));
         if (f > 0.3) {
           const ws = projScale * d * (f / hPx);
-          entry.miniMarker.position.set(
-            entry.world[0] - camWorld.x,
-            entry.world[1] - camWorld.y,
-            entry.world[2] - camWorld.z);
+          let mx = entry.world[0] - camWorld.x,
+              my = entry.world[1] - camWorld.y,
+              mz = entry.world[2] - camWorld.z;
+          if (name === 'sun') {
+            // 太阳标记沿视轴向相机前移 1.05R：径向移动不改变屏幕位置、仅改
+            // 深度——避开日面前表面的自遮挡后 depthTest 即可启用，遮挡
+            // （行星盘面 / 飞船实体）逐像素判定，半掩时平滑裁剪。此前标记
+            // 无深度测试 + craftOccluded 中心线补判，视线进入飞船 9m 包围球
+            // 的瞬间整点熄灭（土星近旁太阳掠过船体时「突然变暗」的根因，
+            // 2026-10-06 用户反馈）
+            const k = Math.max(0, 1 - (entry.radius * 1.05) / Math.max(d, 1e-9));
+            mx *= k; my *= k; mz *= k;
+            entry.miniMarker.visible = true;
+          } else {
+            // 行星标记无深度测试：被更近行星挡住（射线-球判定，含扁椭球
+            // 仿射）或被飞船实体挡住（射线-包围球判定）时一并隐藏
+            entry.miniMarker.visible = !viewOccluded(
+              entry.world[0], entry.world[1], entry.world[2], name) &&
+              !craftOccluded(entry.world[0], entry.world[1], entry.world[2]);
+          }
+          entry.miniMarker.position.set(mx, my, mz);
           entry.miniMarker.scale.set(ws, ws, 1);
           entry.miniMarker.material.opacity = mp.op0 + (mp.op1 - mp.op0) * (f / mp.size);
-          // 遮挡剔除：天体被更近行星挡住时亮点一并隐藏（太阳标记 depthTest:false）；
-          // 无深度测试的标记再补飞船实体遮挡（太阳在飞船正后方时不得透过船体）
-          entry.miniMarker.visible = !viewOccluded(
-            entry.world[0], entry.world[1], entry.world[2], name) &&
-            (entry.miniMarker.material.depthTest || !craftOccluded(
-              entry.world[0], entry.world[1], entry.world[2]));
         } else {
           entry.miniMarker.visible = false;
         }
@@ -2851,7 +3302,193 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     }
 
     frameCount++;
+    updateHdrExposure(performance.now());
     return { cassWorld };
+  }
+
+  /* —— HDR 自适应曝光（方案 A 重构：实测优先，解析回退）——
+   * 实测路径（HDR RT 管线激活）：测光链从 rtScene 降采样到 1×1（shader 内已
+   * 解码线性 + 深空地板），readRenderTargetPixels 每帧 4 字节 → key = hdrLum。
+   * 环带/轨迹/掩食全黑等一切真实画面内容自动进 key——旧解析估计只数太阳盘 +
+   * 天体盘，环占满画面不响应的问题根治。
+   * 解析路径（无浮点扩展 / 普通模式材质注入 / 管线未激活首帧）：旧几何估计
+   * 原样保留（key = Σ 景物亮度×屏占 / 全屏），见原注释。
+   * 均衡/节奏（用户反馈重标）：key 均衡点 0.045、深空地板 0.0022、τ=0.5s、
+   * clamp [0.6, 4.0]、EV ±2 手动补偿（合成期乘 2^ev，与自动量解耦）——夜面
+   * key 收敛地板 → E 顶满 4.0，星光底内容 ×4 后可辨。
+   * 帧态（每帧）：星光环境底仅真实光照+HDR 生效（本影纯黑×曝光=0，不创造光
+   * ——给场景一点真实微光才让夜面「有感」）；日面增益 ×4 仅 RT 管线（8-bit
+   * 画布路径硬削顶无意义）；材质级注入 uHdrOn 在 RT 管线期休眠（合成统一
+   * 做曝光+ACES，避免双重色调映射），回退路径照旧。 */
+  const _hdrSunW = [0, 0, 0];
+  function analyticHdrKey() {
+    const W = window.innerWidth, H = window.innerHeight;
+    const A = W * H;
+    const fPx = H / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+    let sumLA = 0, covered = 0;
+    // 太阳（世界原点）
+    {
+      const dS = Math.hypot(camWorld.x, camWorld.y, camWorld.z) || 1;
+      const rPx = SUN_RADIUS / dS * fPx;
+      const sp = screenPosOf(_hdrSunW);
+      if (!sp.behind && !viewOccluded(0, 0, 0, 'sun') &&
+          sp.x > -rPx && sp.x < W + rPx && sp.y > -rPx && sp.y < H + rPx) {
+        const area = Math.min(Math.PI * rPx * rPx, A);
+        sumLA += 1.3 * area; covered += area;
+      }
+    }
+    for (const [name, e] of registry) {
+      if (name === '__sunLight' || name === 'sun' || !e.radius) continue;
+      const sp = screenPosOf(e.world);
+      if (sp.behind) continue;
+      const rPx = e.radius / Math.max(sp.dist, 1e-9) * fPx;
+      if (sp.x < -rPx || sp.x > W + rPx || sp.y < -rPx || sp.y > H + rPx) continue;
+      const area = Math.min(Math.PI * rPx * rPx, A);
+      // Lambert 相位近似：body→sun（世界原点）与 body→cam 夹角
+      const sx = -e.world[0], sy = -e.world[1], sz = -e.world[2];
+      const cx = camWorld.x - e.world[0], cy = camWorld.y - e.world[1], cz = camWorld.z - e.world[2];
+      const cosPh = (sx * cx + sy * cy + sz * cz) /
+        ((Math.hypot(sx, sy, sz) || 1) * (Math.hypot(cx, cy, cz) || 1));
+      const lit = 0.5 * (1 + Math.max(-1, Math.min(1, cosPh)));
+      sumLA += (0.35 * lit + 0.03 * (1 - lit)) * area;
+      covered += area;
+    }
+    sumLA += 0.006 * Math.max(0, A - covered);
+    return sumLA / A;
+  }
+  /* 聚焦天体测光盒（聚焦全权，20261008d）：CassiniCamera.state.focusName
+   *（'cassini' = 飞船本体，其余 = registry 天体）投影到屏幕，盒半边 = 角半径
+   * × 环系数（土星 2.41 = A 环外缘/本体半径——环亮部必须进 meter，否则特写
+   * 盒只含本体 → 环被吹爆；木/天/海环极暗不参与）。特写时盒封顶全屏 = 数学
+   * 等价旧全画面测光；无 14px 下限（飞船等无半径目标保留点测斑）。
+   * 离屏/背向 → on=false（测光走解析相位模型——表面亮度与是否在画面内无关）。*/
+  const RING_METER = { saturn: 2.41 };
+  function updateHdrSubject() {
+    const CC = window.CassiniCamera;
+    const fname = CC ? CC.state.focusName : 'cassini';
+    let w = null, r = 0;
+    if (fname === 'cassini') w = _cassWorld;
+    else if (fname === 'sun') { w = _hdrSunW; r = SUN_RADIUS; }
+    else {
+      const e = registry.get(fname);
+      if (e && e.world && e.radius) { w = e.world; r = e.radius; }
+    }
+    if (!w) { _hdrSubject.on = false; return; }
+    const sp = screenPosOf(w);
+    const W = window.innerWidth, H = window.innerHeight;
+    const fPx = H / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+    const rPx = r > 0 ? r / Math.max(sp.dist, 1e-9) * fPx : 0;
+    // 受照比（夜面星光底补偿用）：Lambert 相位，与画面构图无关
+    const sx = -w[0], sy = -w[1], sz = -w[2];
+    const cx = camWorld.x - w[0], cy = camWorld.y - w[1], cz = camWorld.z - w[2];
+    const cosPh = (sx * cx + sy * cy + sz * cz) /
+      ((Math.hypot(sx, sy, sz) || 1) * (Math.hypot(cx, cy, cz) || 1));
+    _hdrSubject.lit = fname === 'sun' ? 1 : 0.5 * (1 + Math.max(-1, Math.min(1, cosPh)));
+    if (sp.behind) { _hdrSubject.on = false; return; }
+    // 点目标（飞船，r=0）不走盒实测（20261009b）：14px 点测斑在 64² 测光图上
+    // 只落 1-2 纹素，49 tap 全部命中同一像素——lumS = 单像素亮度（镜面反光
+    // 可达 0.5-1.5），E 随姿态/反光在 0.23↔1.59 间逐帧乱跳，且远景下飞船
+    // 纹素明暗随机。改走解析相位模型（alb 0.22 → E=1.59 稳定），与回退路径
+    // 固有语义一致；lit 已在上面更新，夜面补偿不受影响。
+    if (r <= 0) { _hdrSubject.on = false; return; }
+    // 盒半边 = 角半径 × 环系数，封顶全屏（点目标已在上面提前返回）
+    const half = Math.min(rPx * (RING_METER[fname] || 1), 0.5 * Math.min(W, H));
+    if (half <= 0 || sp.x < -half || sp.x > W + half || sp.y < -half || sp.y > H + half) {
+      _hdrSubject.on = false; return;
+    }
+    const u = sp.x / W, v = 1 - sp.y / H;   // GL uv（v=1 画面顶）
+    const hu = Math.min(0.5, half / W), hv = Math.min(0.5, half / H);
+    _hdrSubject.on = true;
+    _hdrSubject.u0 = u - hu; _hdrSubject.u1 = u + hu;
+    _hdrSubject.v0 = v - hv; _hdrSubject.v1 = v + hv;
+    _hdrSubject.big = r > 0 ? rPx >= 6 : true;   // 亚像素目标 64² 图采样不到 → 解析模型
+  }
+  /* 回退路径与聚焦盒无效时的聚焦天体亮度估计：Lambert 相位模型，**不乘屏占
+   * 且与画面构图无关**（聚焦全权）——离屏/亚像素目标照常给出表面亮度，只有
+   * 目标不存在（-1）才落到帧测光兜底。
+   * 跨路径一致性标定（probe_subject 实测对齐 RT 盒 lumS）：
+   *   alb 覆盖——地球云层实测盒 0.364 vs 素盘 0.192（E 0.93 vs 1.59），视觉
+   *   反照率 earth 0.68 / venus 0.65 / jupiter 0.50；
+   *   土星环背光项——环亮部进 RT 盒（RING_METER 2.41）但不进素盘模型，掩食
+   *   RT E≈1.14 vs 回退 1.59：ringLum = 0.45×(1−lit)（薄环前向散射，背光侧
+   *   亮），与行星项取 max（昼侧环项≈0 不干扰）。 */
+  const SUBJECT_ALB = { earth: 0.68, venus: 0.65, jupiter: 0.50 };
+  function analyticSubjectLum() {
+    const CC = window.CassiniCamera;
+    const fname = CC ? CC.state.focusName : 'cassini';
+    let w = null, alb = 0.35, night = 0.03;
+    if (fname === 'cassini') { w = _cassWorld; alb = 0.22; }
+    else if (fname === 'sun') return 1.3;   // 日面本体亮度（相位无意义）
+    else {
+      const e = registry.get(fname);
+      if (e && e.world) { w = e.world; alb = SUBJECT_ALB[fname] || alb; }
+    }
+    if (!w) return -1;
+    const sx = -w[0], sy = -w[1], sz = -w[2];
+    const cx = camWorld.x - w[0], cy = camWorld.y - w[1], cz = camWorld.z - w[2];
+    const cosPh = (sx * cx + sy * cy + sz * cz) /
+      ((Math.hypot(sx, sy, sz) || 1) * (Math.hypot(cx, cy, cz) || 1));
+    const lit = 0.5 * (1 + Math.max(-1, Math.min(1, cosPh)));
+    const planet = alb * lit + night * (1 - lit);
+    if (fname === 'saturn') return Math.max(planet, 0.45 * (1 - lit));
+    return planet;
+  }
+  function updateHdrExposure(now) {
+    // 帧态：管线激活 = 开关 && 真实光照 && 浮点 RT 就绪（renderPost 置 hdrPathOn）
+    const pipeline = hdrEnabled && realisticOn && hdrPathOn;
+    if (starAmb) starAmb.intensity = (realisticOn && hdrEnabled) ? hdrCfg.star : 0;
+    if (starMat) starMat.uniforms.uStarDim.value = pipeline ? 0.45 : 1;
+    if (sunMat && sunMatBase) sunMat.color.copy(sunMatBase).multiplyScalar(pipeline ? 4.0 : 1.0);
+    hdrU.uHdrOn.value = (hdrEnabled && !pipeline) ? 1 : 0;
+    if (!hdrEnabled) { hdrU.uExposure.value = 1; hdrLastNow = 0; return; }
+    // 聚焦全权（20261008d 重构，用户拍板）：唯一基准 = 聚焦天体在视野中的
+    // 亮度，E = keyS / max(meter_focus, anchorS)，与构图/背景/距离完全解耦。
+    // meter_focus 三级来源：
+    //   ① 聚焦盒实测（RT 管线，hdrLumS ≥0）——特写盒封顶全屏 ≈ 旧全画面测光，
+    //      已批准特写基准自然保留；远景盒缩小只含天体，黑空不稀释；
+    //   ② 解析相位模型（盒无效：亚像素/纯暗面/离屏/回退路径）——常数控
+    //      制在 keyAS/anchorAS（与 RT 常数各自独立标定，同视角 E 同量级）；
+    //   ③ 帧测光兜底（连聚焦目标都不存在——实践中几乎不可达）。
+    // 夜面星光底补偿：聚焦天体受照比 <25% 时按比例抬升 starAmb（最多
+    // nightFill 倍）——E 向亮部看齐后夜面内容不至漆黑（掩食观感折衷）。
+    updateHdrSubject();
+    const litF = _hdrSubject.lit;
+    const nf = 1 + (hdrCfg.nightFill - 1) * (1 - Math.min(1, litF / 0.25));
+    starAmb.intensity = (realisticOn && hdrEnabled) ? hdrCfg.star * nf : 0;
+    let targetBase;
+    if (pipeline && hdrLumS >= 0) {
+      // 环背光下限（20261009b，与解析路径 analyticSubjectLum 同项同域——keyS=keyAS）：
+      // 薄残月视角盒均值被黑空稀释（实测 0.12），环亮弧吹爆；0.45×(1−lit) 是
+      // 环前向散射的解析模型值，只在盒低于它（稀释）时生效。掩食场景盒 0.335 ≈
+      // 环项 0.30 → max 不变（E 1.04 保持原验收值），残月场景 0.123→0.41 修复
+      let mS = hdrLumS;
+      const CCv = window.CassiniCamera;
+      if (litF < 0.5 && CCv && CCv.state.focusName === 'saturn') {
+        mS = Math.max(mS, 0.45 * (1 - litF));
+      }
+      targetBase = hdrCfg.keyS / Math.max(mS, hdrCfg.anchorS);
+    } else {
+      const sA = analyticSubjectLum();
+      if (sA >= 0) targetBase = hdrCfg.keyAS / Math.max(sA, hdrCfg.anchorAS);
+      else if (pipeline && hdrLum >= 0) targetBase = hdrCfg.key / Math.max(hdrLum, hdrCfg.anchor);
+      else targetBase = hdrCfg.keyA / Math.max(analyticHdrKey(), hdrCfg.anchorA);
+    }
+    // EV 补偿：RT 管线在合成 shader 乘 2^ev（uEv）；回退路径（材质注入）无合成
+    // pass，折进曝光目标——两条路径 EV 语义一致
+    const evMul = pipeline ? 1 : Math.pow(2, hdrCfg.ev);
+    const target = THREE.MathUtils.clamp(
+      targetBase * evMul, hdrCfg.min, hdrCfg.max);
+    if (hdrLastNow === 0) hdrU.uExposure.value = target;
+    else {
+      const dt = Math.min(0.1, (now - hdrLastNow) / 1000);
+      hdrU.uExposure.value += (target - hdrU.uExposure.value) * (1 - Math.exp(-dt / hdrCfg.tau));
+    }
+    hdrLastNow = now;
+  }
+  function setHdr(on) {
+    hdrEnabled = !!on;
+    hdrLastNow = 0;                 // 开启首帧直接跳到目标曝光
+    if (!on) hdrU.uExposure.value = 1;
   }
 
   /* 真实自转 + 潮汐锁定（IAU 数据，SPIN 表） */
@@ -3089,6 +3726,7 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     return true;
   }
   const _shineDir = new THREE.Vector3();
+  const _sunDirV = new THREE.Vector3();   // 飞船→太阳 视图空间方向（env IBL 暗面门禁）
   const _shineCol = new THREE.Vector3();
   const _shineTint = [1, 1, 1];
   const _shineDbgCraft = [0, 0, 0], _shineDbgSmp = [0, 0, 0], _shineDbgSun = [0, 0, 0];
@@ -3183,11 +3821,89 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
   const _shineDirH = new THREE.Vector3();
   const _shineColH = new THREE.Vector3();
   const _shineTintH = [1, 1, 1];
+  /* —— 行星盘镜面反射（真实光照，cassini_model.js setReflections 注入渲染）——
+   * 按飞船位置遍历天体、挑角半径最大的至多 REFL_MAX 个（<REFL_MIN_RAD 不入
+   * 槽），相位照度比 k 与 solveShine 同式。色调复用 sampleShineTint（与反照
+   * 光同源的表面贴图采样，晨昏线局地光照权重自洽），缺失回退 SHINE_TINT。
+   * 亮度 = 色调 × REFL_SCALE × k：镜面反射保持盘面辐亮度不随距离衰减（月球
+   * 在镜中的像与抬头看一样亮），REFL_SCALE ≈ SUN_INTENSITY/π × 可见盘面平均
+   * 朗伯因子 2/3。方向按相机四元数转入视图空间（_camQInv，同 applyShine），
+   * 着色端逐像素 reflect(−视线,法线) 命中角盘 → 相机移动时反射像实时滑动。
+   * 在 updatePlanetShine 开头调用：调试探针缓冲（smp/sunL/lam）随后被反照光
+   * 解算覆写，面板语义保持反照光视角。槽位对象预分配复用，仅标量/引用重建。 */
+  const REFL_MAX = 3;
+  const REFL_SCALE = 0.44;
+  const REFL_MIN_RAD = 0.005;
+  const reflCand = [];
+  const reflSlotsSC = Array.from({ length: REFL_MAX },
+    () => ({ dir: new THREE.Vector3(), col: new THREE.Vector3(), rad: 0 }));
+  const reflSlotsH = Array.from({ length: REFL_MAX },
+    () => ({ dir: new THREE.Vector3(), col: new THREE.Vector3(), rad: 0 }));
+
+  function solveReflections(world, slots) {
+    reflCand.length = 0;
+    for (const [name, e] of registry) {
+      if (name === '__sunLight' || name === 'sun' || !e.radius) continue;
+      const dx = e.world[0] - world[0],
+            dy = e.world[1] - world[1],
+            dz = e.world[2] - world[2];
+      const d = Math.hypot(dx, dy, dz);
+      if (d <= e.radius) continue;            // 已撞入行星本体
+      const rad = Math.asin(Math.min(1, e.radius / d));
+      if (rad < REFL_MIN_RAD) continue;
+      const cosA = Math.max(-1, Math.min(1,
+        (dx * e.world[0] + dy * e.world[1] + dz * e.world[2]) /
+        (d * (Math.hypot(e.world[0], e.world[1], e.world[2]) || 1))));
+      reflCand.push({ e, rad, k: 0.5 * (1 + cosA), dx: dx / d, dy: dy / d, dz: dz / d });
+    }
+    reflCand.sort((a, b) => b.rad - a.rad);   // 镜像显著度 = 角盘大小，按角半径取前 N
+    let n = 0;
+    for (; n < REFL_MAX && n < reflCand.length; n++) {
+      const c = reflCand[n], slot = slots[n];
+      slot.rad = c.rad;
+      slot.dir.set(c.dx, c.dy, c.dz).applyQuaternion(_camQInv);
+      if (!sampleShineTint(c.e, c.k, c.dx, c.dy, c.dz, _shineTint)) {
+        const t = SHINE_TINT[c.e.name] || [1, 1, 1];
+        _shineTint[0] = t[0]; _shineTint[1] = t[1]; _shineTint[2] = t[2];
+      }
+      const I = REFL_SCALE * c.k;
+      slot.col.set(_shineTint[0] * I, _shineTint[1] * I, _shineTint[2] * I);
+    }
+    for (; n < REFL_MAX; n++) slots[n].rad = 0;   // 空槽旁路（着色端按 rad>0 判定）
+  }
+
+  function updateCraftReflections(hw) {
+    if (liveEnvOn) {
+      // 实时 cube 环境已含行星盘像（带云形/环细节），解析角盘项关闭避免双计；
+      // 槽位清零走着色端旁路
+      window.CassiniModel.setReflections(null);
+      window.CassiniModel.setProbeReflections(null);
+      return;
+    }
+    solveReflections(_cassWorld, reflSlotsSC);
+    window.CassiniModel.setReflections(reflSlotsSC);
+    if (hw) {
+      solveReflections(hw, reflSlotsH);
+      window.CassiniModel.setProbeReflections(reflSlotsH);
+    } else {
+      window.CassiniModel.setProbeReflections(null);
+    }
+  }
+
   function updatePlanetShine(hw, fC, fH) {
     // 探测器（hw = 分离后惠更斯位置，未分离为 null）先解算：shineDebug 探针
     // 缓冲（smp/sunL/lam 在 sampleShineTint 内复用）随后被 Cassini 解算覆写，
     // 调试语义保持卡西尼视角。item 7：各实体独立解算本影残差补项（fC/fH），
     // 有残差时 uShineRes 置 1 启用着色端暗面补项
+    // 飞船→太阳 视图空间方向：env IBL 暗面门禁（cassini_model envGate 用，
+    // 太阳遥远处轨道器/探测器方向差可忽略，探测器套共用一份）
+    const seSun = registry.get('sun');
+    if (seSun) {
+      _sunDirV.set(seSun.world[0] - _cassWorld[0], seSun.world[1] - _cassWorld[1],
+        seSun.world[2] - _cassWorld[2]).normalize().applyQuaternion(_camQInv);
+      window.CassiniModel.setSunDirView(_sunDirV);
+    }
+    updateCraftReflections(hw);   // 行星盘镜面反射（最先解算，让出调试探针缓冲）
     const h = hw ? solveShine(hw) : null;
     const hr = hw ? solveEclResidual(hw, fH) : null;
     if (h || hr) {
@@ -3235,11 +3951,13 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     }
   }
 
-  /* —— 亮点标记视线遮挡 —— 太阳/Cassini/Huygens 标记 depthTest:false（标记须
+  /* —— 亮点标记视线遮挡 —— 行星/Cassini/Huygens 标记 depthTest:false（标记须
    * 盖过自身天体的近侧盘面，深度缓冲无法区分「被自身盘面挡住」与「被前方
    * 行星挡住」），改用 CPU 射线-球体判定：相机→目标连线被任一更近天体
    * （skip = 目标自身，排除自身盘面）的球面截断 → 目标在行星盘面之后，
-   * 标记随天体一并隐藏（土星遮挡太阳/飞船时不再显示穿透亮点）。 */
+   * 标记随天体一并隐藏（土星遮挡太阳/飞船时不再显示穿透亮点）。
+   * 太阳标记已改深度测试（2026-10-06，标记沿视轴前移 1.05R 避开日面自遮挡），
+   * 不再走本判定——遮挡逐像素平滑裁剪，无二元突变。 */
   function viewOccluded(wx, wy, wz, skip) {
     const dx = wx - camWorld.x, dy = wy - camWorld.y, dz = wz - camWorld.z;
     const len2 = dx * dx + dy * dy + dz * dz;
@@ -3284,12 +4002,13 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
   }
 
   /* —— 飞船实体对无深度测试标记的遮挡 ——
-   * 太阳迷你标记 depthTest:false（须盖过日面自身深度，否则标记被日盘前半
+   * 行星迷你标记 depthTest:false（须盖过自身盘面，否则标记被行星前半
    * 球吞掉），代价是深度缓冲里的一切都挡不住它——Cassini 轨道器 / Huygens
-   * 探测器模型恰在相机与太阳之间时会透过船体显形（背光特写尤其刺眼）。
+   * 探测器模型恰在相机与行星标记之间时会透过船体显形。
    * 按「相机→天体射线穿过飞船包围球」解析补测，与 viewOccluded 同一套射
    * 线-球体几何；仅在 3D 模型实际渲染时生效——远观只剩亮点标记时，亮点互
-   * 叠由 renderOrder 定层级（Cassini 标记更上），太阳标记不熄灭避免闪烁。 */
+   * 叠由 renderOrder 定层级（Cassini 标记更上），标记不熄灭避免闪烁。
+   * 太阳标记已改深度测试（2026-10-06），不再走本判定。 */
   const CASSINI_OCCL_R = MODEL_SPAN / 2;   // 9 m：全尺寸跨距（磁强计双杆）之半
   const HUYGENS_OCCL_R = 0.0016;           // 1.6 m：φ2.62 m 探测器 + 余量
   function craftOccluded(wx, wy, wz) {
@@ -3652,28 +4371,25 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     }
   }
 
-  /* —— 真实光照后处理链（item 1）：场景直绘 + 掩膜太阳 bloom ——
+  /* —— 真实光照后处理链（item 1 → 真 HDR 管线，2026-10-07 重构）——
    * 仅真实光照模式启用（效果类改动按约定不入普通模式，普通模式照旧直绘画布）。
-   * 链路：
-   *   scene → 画布（硬件 MSAA，与普通模式同一条零 RT 开销路径）；
-   *   太阳（盘面 + 双层光晕壳，layers 1）单独渲进半分辨率 rtSun →
-   *   （掩膜 = 遮挡预通道[层 2 不透明天体纯黑写深度] + 太阳三件套叠绘，
-   *   保证 bloom 源与画布可见性一致——行星凌掩时泛光同步消退，
-   *   详见 renderPost 步骤 2 注释）
-   *   半/四分之一/八分之一 三级「下采样 + 可分离高斯」→ 加色合成回画布。
-   *
-   * 为什么不再把整帧渲进 HDR RT：实测（WebKit，1080p）rtScene 4×MSAA 使帧率
-   * 从直绘 120fps 掉到 60fps——对数深度逐片元写 gl_FragDepth 令 MSAA 退化为
-   * 全样本着色，RT 路径又享受不到驱动对默认帧缓冲的优化；且本环境 WebKit 的
-   * RT MSAA resolve 存在间歇性产出整块零矩形的缺陷（~150px 方块、位置漂移，
-   * 300 帧命中 117 帧；关 MSAA 后 0/80 帧）——即「移动视角黑块闪烁」「太阳
-   * 突然变暗」两个目击问题的根因。掩膜方案把 bloom 对象限定为太阳：行星亮度
-   * 永不进入模糊链，向阳面不再被泛光洗白（此前的过曝主因）；太阳光晕的过曝
-   * 溢出得以保留。全屏额外开销只剩半分辨率太阳绘制 + 三级小尺寸模糊 + 一趟
-   * 加色全屏四边形，实测与直绘基本同帧率。
-   * rtSun 为 RGBA16F（无浮点渲染扩展时回退 8-bit，>1 值削顶、泛光略弱）；
-   * 盘面是内置材质，经顶部 encodings chunk 补丁在 RT 中获得与画布一致的
-   * sRGB 值（该补丁现在唯一的作用对象就是这条路径）。 */
+   * 链路（HDR 开：完整 RT 管线）：
+   *   scene → rtScene（全分辨率 RGBA16F，无 MSAA，sRGB 编码 HDR 值）→
+   *   太阳掩膜 rtSun（遮挡预通道 + 太阳三件套，与画布可见性一致）→
+   *   半/四分之一/八分之一 三级模糊 → 测光链（64²→1，Float readback）→
+   *   合成 pass：场景 + bloom（线性域加色）→ ×E×2^EV → ACES → sRGB → dither
+   *   → rtLDR → FXAA → 画布。
+   * 链路（HDR 关 / 无浮点扩展 / __forceDirect：旧回退路径）：
+   *   scene → 画布（硬件 MSAA 直绘）→ 太阳掩膜/三级模糊 → 加色合成回画布。
+   * 为什么 rtScene 不开 MSAA：实测（WebKit，1080p）RT 4×MSAA 使帧率腰斩，且
+   * 本环境 WebKit 的 RT MSAA resolve 存在间歇性产出整块零矩形的缺陷（关 MSAA
+   * 后 0/80 帧）——即「移动视角黑块闪烁」的根因；几何锯齿由合成后 FXAA 补偿。
+   * 掩膜方案沿用 item 1：bloom 源限定为太阳，行星亮度不进模糊链（向阳面不被
+   * 泛光洗白）；HDR 模式下 bloom 在色调映射前以线性域加色，光晕与景物统一
+   * 参与曝光（旧路径 bloom 叠画布恒亮的割裂感根除）。
+   * rtSun/rtScene 均为 RGBA16F（无浮点渲染扩展时整条 HDR 管线不可用，走回退）；
+   * 值语义 = sRGB 编码的线性场景值（材质经 encodings chunk 补丁输出
+   * LinearTosRGB，16F 下 >1 值编码后仍 >1，合成期精确解码——见 POST_LUM_FS 注释）。 */
   const POST_BLOOM_STR = 0.55; // bloom 叠加强度
   const POST_VS = `
     varying vec2 vUv;
@@ -3713,15 +4429,119 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
       gl_FragColor = vec4( bloom * uStr, 1.0 );
     }`;
 
+  /* —— 真 HDR 管线（方案 A，2026-10-06 重构）——
+   * rtScene（全分辨率 RGBA16F，无 MSAA）存 **sRGB 编码的 HDR 值**：材质照旧
+   * 经 encodings_fragment 补丁输出 LinearTosRGB——16F 下 >1 线性值编码后仍 >1
+   * （sRGB 传递函数在浮点上双射，合成期精确解码回线性），材质**零重编译**，
+   * 旧「翻转 encodings chunk + 全场 needsUpdate」方案因 program 缓存不感知
+   * chunk 内容（往返切换会命中陈旧缓存）而弃用。无 MSAA 是硬约束：WebKit 的
+   * RT MSAA resolve 有零块缺陷（见 renderPost 旧注释，关 MSAA 后 0/80 帧），
+   * 几何锯齿由合成后的 FXAA 补偿。测光 = 亮度降采样链（首级 sRGB 解码 +
+   * dot(·,Rec709) 折亮度 + 深空地板），1×1 Float RT 每帧 readPixels 4 字节，
+   * JS 侧指数适应——曝光来自**真实画面**，环带/轨迹/掩食全黑自动响应。 */
+  // 测光首级（全分辨率 → 64²）：解码 + 折亮度 + 深空地板（空场景 key ≠ 0，
+  // 曝光抬升有稳定收敛点）；4-tap 盒滤的均值无偏（终值是 1.6 万个稳定采样点
+  // 的平均，测光用途足够）
+  // 测光首级（全分辨率 → 64²）：解码 + 折亮度 + 深空地板（空场景 key ≠ 0，
+  // 曝光抬升有稳定收敛点）；4-tap 盒滤的均值无偏（终值是 1.6 万个稳定采样点
+  // 的平均，测光用途足够）。64² Float 隔帧 readback（16KB）后 **CPU 统计**
+  // 全幅均值/中心 50% 均值/**聚焦天体盒均值**三种测光（2026-10-07：曝光基准
+  // 改为聚焦天体本身——全画面均值随构图稀释，缩小视角时黑空把 meter 拉低、
+  // E 被抬到锚点把小盘面吹爆；天体盒测光与盘面屏占无关，缩小视角 E 恒定）
+  const POST_LUM_FS = `
+    uniform sampler2D tex; uniform vec2 uTexel;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = texture2D( tex, vUv + uTexel * vec2( -0.5, -0.5 ) ).rgb
+             + texture2D( tex, vUv + uTexel * vec2(  0.5, -0.5 ) ).rgb
+             + texture2D( tex, vUv + uTexel * vec2( -0.5,  0.5 ) ).rgb
+             + texture2D( tex, vUv + uTexel * vec2(  0.5,  0.5 ) ).rgb;
+      vec3 lin = mix( c * 0.25 * 0.0773993808, ( c * 0.25 + 0.055 ) / 1.055, step( vec3( 0.04045 ), c * 0.25 ) );
+      float lum = max( dot( lin, vec3( 0.2126, 0.7152, 0.0722 ) ), ${LUM_FLOOR.toFixed(5)} );
+      gl_FragColor = vec4( lum, 0.0, 0.0, 1.0 );
+    }`;
+  // 过亮提取（「过亮应有光晕」）：太阳掩膜（几何）之外，任何被曝光推亮的
+  // 区域按超出量进 bloom。RT 路径采样 rtScene（sRGB 编码 HDR 值 → 解码 →
+  // ×uE 折「曝光后亮度」选权重，输出**未乘 uE 的原亮度**——合成 pass 在
+  // 色调映射前对 场景+bloom 统一乘 uE，语义一致）；回退路径采样画布副本
+  // （值已含曝光，uE=1 直读）。软阈值 smoothstep(uT, 2uT)——膝部平滑无硬边。
+  const POST_EXTRACT_FS = `
+    uniform sampler2D tex; uniform float uE; uniform float uT; uniform float uG;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = texture2D( tex, vUv ).rgb;
+      vec3 lin = mix( c * 0.0773993808, ( c + 0.055 ) / 1.055, step( vec3( 0.04045 ), c ) );
+      float l = dot( lin, vec3( 0.2126, 0.7152, 0.0722 ) ) * uE;
+      float w = smoothstep( uT, uT * 3.0, l );
+      gl_FragColor = vec4( lin * w * uG, 1.0 );
+    }`;
+  // HDR 合成（rtScene + bloom → ×E×EV → 亮度保持 ACES → dither → rtLDR）。
+  // **域契约（20261010c 修复）**：rtScene 存的是 sRGB 编码显示域值（材质经
+  // encodings chunk 输出，与回退路径画布同域）——合成变换必须与回退路径的
+  // HDR_LUMA 注入逐像素同构：×E → luma-ACES → clamp → dither，**不做 sRGB
+  // 解码/编码**。旧实现 s2l() 漏写 ^2.4 幂（伪解码 (c+0.055)/1.055 ≈ 恒等+
+  // 20% 提升）、末尾又 l2s() 再展开——中间调净增亮 ~2.3×（环弧实测画布 154，
+  // 正确值 67），RT 路径整体比回退路径吹亮：环亮弧白爆+橙红撕裂、残月白蛋、
+  // ACES 肩部把光晕压平成「一块无递减」（用户自 HDR v2 起全部症状在 RT 路
+  // 径、回退路径正常的根因）。
+  // 亮度保持 ACES：对 luma 施曲线、RGB 按缩放比还原（保持色相，2026-10-06）。
+  // bloom 在色调映射之前加色——光晕与景物统一参与曝光（设计意图保持）。
+  const POST_COMP_HDR_FS = `
+    uniform sampler2D tex; uniform sampler2D b1; uniform sampler2D b2; uniform sampler2D b3;
+    uniform float uStr; uniform float uE; uniform float uEv;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = texture2D( tex, vUv ).rgb;
+      vec3 bloom = ( texture2D( b1, vUv ).rgb * 0.5
+                   + texture2D( b2, vUv ).rgb * 0.3
+                   + texture2D( b3, vUv ).rgb * 0.2 ) * uStr;
+      c += bloom;
+      c = max( c, vec3( 0.0 ) ) * uE * pow( 2.0, uEv );
+      float _l = dot( c, vec3( 0.2126, 0.7152, 0.0722 ) );
+      float _lt = clamp( ( _l * ( 2.51 * _l + 0.03 ) ) / ( _l * ( 2.43 * _l + 0.59 ) + 0.14 ), 0.0, 1.0 );
+      vec3 t = clamp( c * ( _lt / max( _l, 1e-4 ) ), 0.0, 1.0 );
+      float n = fract( sin( dot( gl_FragCoord.xy, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+      t += ( n - 0.5 ) / 255.0;
+      gl_FragColor = vec4( t, 1.0 );
+    }`;
+  // FXAA 3.11 console 版（短式）：rtLDR → 画布，补偿 rtScene 无 MSAA 的几何锯齿
+  const POST_FXAA_FS = `
+    uniform sampler2D tex; uniform vec2 uTexel;
+    varying vec2 vUv;
+    void main() {
+      vec3 rgbNW = texture2D( tex, vUv + uTexel * vec2( -1.0, -1.0 ) ).xyz;
+      vec3 rgbNE = texture2D( tex, vUv + uTexel * vec2(  1.0, -1.0 ) ).xyz;
+      vec3 rgbSW = texture2D( tex, vUv + uTexel * vec2( -1.0,  1.0 ) ).xyz;
+      vec3 rgbSE = texture2D( tex, vUv + uTexel * vec2(  1.0,  1.0 ) ).xyz;
+      vec3 rgbM  = texture2D( tex, vUv ).xyz;
+      vec3 luma = vec3( 0.299, 0.587, 0.114 );
+      float lNW = dot( rgbNW, luma ), lNE = dot( rgbNE, luma );
+      float lSW = dot( rgbSW, luma ), lSE = dot( rgbSE, luma ), lM = dot( rgbM, luma );
+      float lMin = min( lM, min( min( lNW, lNE ), min( lSW, lSE ) ) );
+      float lMax = max( lM, max( max( lNW, lNE ), max( lSW, lSE ) ) );
+      vec2 dir = vec2( -(( lNW + lNE ) - ( lSW + lSE )), (( lNW + lSW ) - ( lNE + lSE )) );
+      float dirReduce = max( ( lNW + lNE + lSW + lSE ) * 0.03125, 0.0078125 );
+      float rcpDirMin = 1.0 / ( min( abs( dir.x ), abs( dir.y ) ) + dirReduce );
+      dir = clamp( dir * rcpDirMin, -8.0, 8.0 ) * uTexel;
+      vec3 rgbA = 0.5 * ( texture2D( tex, vUv + dir * ( 1.0 / 3.0 - 0.5 ) ).xyz
+                        + texture2D( tex, vUv + dir * ( 2.0 / 3.0 - 0.5 ) ).xyz );
+      vec3 rgbB = rgbA * 0.5 + 0.25 * ( texture2D( tex, vUv + dir * -0.5 ).xyz
+                                      + texture2D( tex, vUv + dir * 0.5 ).xyz );
+      float lB = dot( rgbB, luma );
+      gl_FragColor = vec4( ( lB < lMin || lB > lMax ) ? rgbA : rgbB, 1.0 );
+    }`;
+
   let post = null;   // 惰性创建（首次真实光照渲染时），null = 未初始化
   const _postSize = new THREE.Vector2();
 
   function ensurePost() {
     if (post) return;
     const size = renderer.getDrawingBufferSize(_postSize);
-    // rtSun 需浮点渲染扩展（RGBA16F 可写）；否则 8-bit 回退
+    // rtSun 需浮点渲染扩展（RGBA16F 可写）；否则 8-bit 回退。
+    // WebKit：连续渲入 16F RT 有引擎缺陷（见 IS_WEBKIT_UA 注释）→ 不建 rtScene，
+    // HDR 走材质注入回退；rtSun 掩膜链保持原样（已验证）
     let hdr = false;
-    if (renderer.capabilities.isWebGL2) {
+    if (renderer.capabilities.isWebGL2 && !IS_WEBKIT_UA) {
       try { hdr = !!renderer.extensions.get('EXT_color_buffer_float'); } catch (e) { hdr = false; }
     }
     // 一律不开 MSAA：模糊源无需抗锯齿，且 RT MSAA resolve 在 WebKit 下有零块缺陷
@@ -3741,6 +4561,33 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
       quadScene: new THREE.Scene(),
       quadCam: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1),
     };
+    // 真 HDR 管线（需浮点扩展）：rtScene 全分辨率 16F（无 MSAA——WebKit
+    // RT MSAA 零块缺陷，锯齿由 FXAA 补偿）；rtLDR 为合成输出/FXAA 输入；
+    // 测光 64² 单级（Float 供 16KB readback，CPU 统计全幅/中心/聚焦天体三种
+    // 均值——2026-10-07 起，取代旧双链）。旧链史：64→16→4→1 的 uTexel 取
+    // 0.5/源宽——4 tap 全落同一源纹素，终值=单像素采样（2026-10-06 发现，
+    // 此前所有标定均为中心像素假读数）；2:1 步进修复后链路正确，但聚焦天体
+    // 测光需要逐纹素统计，链式 1×1 无法提供 → 收敛为单级 64² + CPU。
+    if (hdr) {
+      const mkLum = (n) => new THREE.WebGLRenderTarget(n, n, {
+        minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+        format: THREE.RGBAFormat, type: THREE.FloatType, depthBuffer: false, stencilBuffer: false,
+      });
+      P.rtScene = mkRT(w, h, true);
+      P.rtLDR = new THREE.WebGLRenderTarget(w, h, {
+        minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+        format: THREE.RGBAFormat, type: THREE.UnsignedByteType, depthBuffer: false, stencilBuffer: false,
+      });
+      P.rtLum64 = mkLum(64);
+    }
+    // 回退路径画布副本（过亮提取的采样源）：copyFramebufferToTexture 抓
+    // 默认帧缓冲，尺寸必须恒等于 drawingBuffer，resize 时重建（见 resizePost）。
+    // r147 的 FramebufferTexture 第三参 format 无默认值——不传 = undefined →
+    // texStorage2D INVALID_ENUM → 存储未分配 → copyTexSubImage2D 溢出（WebKit
+    // 实测两连报），必须显式 RGBAFormat；过滤改 Linear（半分辨率提取采样）
+    P.fbTex = new THREE.FramebufferTexture(w, h, THREE.RGBAFormat);
+    P.fbTex.minFilter = THREE.LinearFilter;
+    P.fbTex.magFilter = THREE.LinearFilter;
     P.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
     P.quad.frustumCulled = false;
     P.quadScene.add(P.quad);
@@ -3756,8 +4603,25 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     });
     P.matComp.blending = THREE.AdditiveBlending;
     P.matComp.transparent = true;
+    if (hdr) {
+      P.matLum = mkMat(POST_LUM_FS, {
+        tex: { value: null }, uTexel: { value: new THREE.Vector2() },
+      });
+      P.matCompHdr = mkMat(POST_COMP_HDR_FS, {
+        tex: { value: null }, b1: { value: null }, b2: { value: null }, b3: { value: null },
+        uStr: { value: POST_BLOOM_STR }, uE: { value: 1 }, uEv: { value: 0 },
+      });
+      P.matFXAA = mkMat(POST_FXAA_FS, { tex: { value: null }, uTexel: { value: new THREE.Vector2() } });
+    }
     // 遮挡预通道材质（层 2 天体 → 纯黑 + 写深度；见 renderPost 步骤 2a）
     P.blackMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    // 过亮提取材质（两条路径共用：RT 采样 rtScene / 回退采样画布副本，
+    // 加色并入 rtSun 后走同一三级模糊 + 合成——见 renderPost 步骤 2c）
+    P.matExtract = mkMat(POST_EXTRACT_FS, {
+      tex: { value: null }, uE: { value: 1 }, uT: { value: 0.8 }, uG: { value: 1 },
+    });
+    P.matExtract.blending = THREE.AdditiveBlending;
+    P.matExtract.transparent = true;
     post = P;
   }
 
@@ -3769,6 +4633,15 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     post.rtHalfB.setSize(w >> 1, h >> 1);
     post.rtQuaA.setSize(w >> 2, h >> 2); post.rtQuaB.setSize(w >> 2, h >> 2);
     post.rtEigA.setSize(w >> 3, h >> 3); post.rtEigB.setSize(w >> 3, h >> 3);
+    if (post.rtScene) { post.rtScene.setSize(w, h); post.rtLDR.setSize(w, h); }
+    // FramebufferTexture 尺寸必须与 drawingBuffer 严格一致（glCopyTexSubImage2D
+    // 源窗口），不支持 setSize → 重建
+    if (post.fbTex) {
+      post.fbTex.dispose();
+      post.fbTex = new THREE.FramebufferTexture(w, h, THREE.RGBAFormat);
+      post.fbTex.minFilter = THREE.LinearFilter;
+      post.fbTex.magFilter = THREE.LinearFilter;
+    }
   }
 
   /* 一趟全屏四边形 pass：换材质/uniform → 换目标 → 绘制 */
@@ -3778,15 +4651,30 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     renderer.render(post.quadScene, post.quadCam);
   }
 
+  /* 测光双链参数：全幅首级 64² 网格跨全帧（cell=1/64 uv，tap±cell/4）；
+   * 中心链 uv 重映射 [0.25,0.75]（中央 50%×50% 区域），cell=1/128 uv'。 */
+  const _uv1 = new THREE.Vector2(1, 1), _uv0 = new THREE.Vector2(0, 0);
+  const _uvHalf = new THREE.Vector2(0.5, 0.5), _uvQuarter = new THREE.Vector2(0.25, 0.25);
+  const _texelFull = new THREE.Vector2(1 / 128, 1 / 128);
+  const _texelCenter = new THREE.Vector2(1 / 256, 1 / 256);
+
   function renderPost() {
     ensurePost();
     const P = post;
     // drawing buffer 尺寸漂移兜底（如嵌入式内核改背衬缩放而不派发 resize 事件）
     const size = renderer.getDrawingBufferSize(_postSize);
-    if (P.rtSun.width !== (size.x >> 1) || P.rtSun.height !== (size.y >> 1)) resizePost();
-    // 1) 场景直绘画布：硬件 MSAA，与普通模式同路径（无 RT、无 resolve 开销）
-    renderer.setRenderTarget(null);
+    if ((P.rtScene && P.rtScene.width !== size.x) ||
+        P.rtSun.width !== (size.x >> 1) || P.rtSun.height !== (size.y >> 1)) resizePost();
+    // 真 HDR 管线门禁：开关 && 真实光照 && 浮点 RT 就绪（__forceDirect 逃生）
+    const hdrRT = !!(P.rtScene && hdrEnabled && realisticOn && !window.__forceDirect);
+    hdrPathOn = hdrRT;
+    // 1) 场景：HDR 管线渲入 rtScene（16F 无 MSAA，sRGB 编码 HDR 值，注释见
+    //    POST_LUM_FS 上方）；回退路径直绘画布（硬件 MSAA，原零 RT 开销路径）
+    renderer.setRenderTarget(hdrRT ? P.rtScene : null);
     renderer.render(scene, camera);
+    // 1b) 回退路径：抓画布副本（步骤 2c 过亮提取的采样源——画布值已含
+    //     曝光与色调映射，提取阈值直接作用在「用户看到的亮度」上）
+    if (!hdrRT) renderer.copyFramebufferToTexture(_copyPos, P.fbTex);
     // 2) 太阳掩膜 → 半分辨率 RT，与画布可见性保持一致：
     //    2a) 遮挡预通道：层 2（全部不透明天体）以纯黑材质渲入 rtSun——本趟
     //        renderer.render 的 autoClear 完成清屏（颜色+深度，不依赖手动 clear，
@@ -3806,15 +4694,31 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     renderer.render(scene, camera);
     renderer.autoClear = true;
     camera.layers.set(0);
-    // 3) 三级「下采样 + H/V 高斯」：半 → 四分之一 → 八分之一，晕径逐级翻倍
-    // H/V 往返写回同一张 A 纹（B 仅作中间），三级各自独立
+    // 2c) 过亮提取 → 加色进 rtSun（bloom 源 = 太阳掩膜 ∪ 亮度超阈值区域）：
+    //     RT 源 rtScene（×uE 折曝光后亮度选权重）；回退源画布副本（已含曝光）。
+    //     禁清屏——rtSun 已含太阳掩膜，本 pass 纯加色。效果类改动按约定仅
+    //     HDR 开启时生效（HDR 关的普通真实光照模式保持 item 1 原貌）
+    if (hdrEnabled) {
+      renderer.autoClear = false;
+      P.matExtract.uniforms.tex.value = hdrRT ? P.rtScene.texture : P.fbTex;
+      P.matExtract.uniforms.uE.value = hdrRT ? hdrU.uExposure.value : 1;
+      P.matExtract.uniforms.uT.value = hdrRT ? hdrCfg.bloomT : hdrCfg.bloomT2;
+      P.matExtract.uniforms.uG.value = hdrCfg.bloomG;
+      postPass(P.matExtract, P.rtSun);
+      renderer.autoClear = true;
+    }
+    // 3) 三级「下采样 + H/V 高斯」：半 → 四分之一 → 八分之一，晕径逐级翻倍；
+    //    每级双程（1.5 与 3.0 texel 步进）——单程晕核小，「光晕一块」的硬斑感
+    //    来源之一（20261008e 用户反馈）
     const blurHV = (a, b, w, h) => {
-      P.matBlur.uniforms.tex.value = a.texture;
-      P.matBlur.uniforms.uDir.value.set(1.5 / w, 0);
-      postPass(P.matBlur, b);
-      P.matBlur.uniforms.tex.value = b.texture;
-      P.matBlur.uniforms.uDir.value.set(0, 1.5 / h);
-      postPass(P.matBlur, a);
+      for (const s of [1.5, 3.0]) {
+        P.matBlur.uniforms.tex.value = a.texture;
+        P.matBlur.uniforms.uDir.value.set(s / w, 0);
+        postPass(P.matBlur, b);
+        P.matBlur.uniforms.tex.value = b.texture;
+        P.matBlur.uniforms.uDir.value.set(0, s / h);
+        postPass(P.matBlur, a);
+      }
     };
     blurHV(P.rtSun, P.rtHalfB, P.rtSun.width, P.rtSun.height);
     P.matCopy.uniforms.tex.value = P.rtSun.texture;
@@ -3825,19 +4729,83 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     P.matCopy.uniforms.uTexel.value.set(0.5 / P.rtQuaA.width, 0.5 / P.rtQuaA.height);
     postPass(P.matCopy, P.rtEigA);
     blurHV(P.rtEigA, P.rtEigB, P.rtEigA.width, P.rtEigA.height);
-    // 4) bloom 加色合成回画布（场景已在步骤 1 绘好，禁清屏避免抹掉场景）
-    P.matComp.uniforms.b1.value = P.rtSun.texture;
-    P.matComp.uniforms.b2.value = P.rtQuaA.texture;
-    P.matComp.uniforms.b3.value = P.rtEigA.texture;
-    renderer.autoClear = false;
-    postPass(P.matComp, null);
-    renderer.autoClear = true;
+    // 4) 合成（双路径）：
+    if (hdrRT) {
+      // 4a) 测光：64² 单级 Float readback（16KB，隔帧）→ CPU 统计三种均值：
+      //     全幅 / 中心 50%（帧测光兜底）/ **聚焦天体盒**（聚焦全权唯一基准：
+      //     _hdrSubject 由 updateHdrSubject 每帧投影写入；盒半边 = 角半径 ×
+      //     环系数（土星 2.41），特写封顶全屏 ≈ 全画面测光，远景只含天体——
+      //     黑空永不稀释 meter，E 与距离无关）
+      P.meterTick = !P.meterTick;
+      if (P.meterTick) {
+        P.matLum.uniforms.tex.value = P.rtScene.texture;
+        P.matLum.uniforms.uTexel.value.set(1 / P.rtScene.width, 1 / P.rtScene.height);
+        postPass(P.matLum, P.rtLum64);
+        renderer.readRenderTargetPixels(P.rtLum64, 0, 0, 64, 64, _lumBuf64);
+        let sF = 0, sC = 0, bad = false;
+        for (let i = 0; i < 4096; i++) {
+          const v = _lumBuf64[i * 4];
+          if (!isFinite(v)) { bad = true; break; }
+          sF += v;
+          if ((i & 63) >= 16 && (i & 63) < 48 && i >= 1024 && i < 3072) sC += v;
+        }
+        if (!bad) {
+          hdrLum = 0.5 * (sF / 4096 + sC / 1024);
+          let lS = -1;
+          const S = _hdrSubject;
+          if (S.on && S.big) {
+            // 聚焦天体盒统计：49 tap（7×7 双线性落格）；亮度 > 2×地板 = 亮部
+            // tap（排除夜面/环隙/天空——夜面占比随相位剧变，会污染均值）。
+            // 有效性：亮部 ≥8 tap（亚像素/纯暗面目标采样不可靠 → 回退帧测光）。
+            // meter = 0.5×亮部均值 + 0.5×全盒均值（亮部稳相位、全盒稳环隙）
+            const K = 7, LIT = LUM_FLOOR * 2;
+            let sA2 = 0, nA = 0, sL = 0, nL = 0;
+            for (let iy = 0; iy < K; iy++) for (let ix = 0; ix < K; ix++) {
+              const u = S.u0 + (S.u1 - S.u0) * ix / (K - 1);
+              const v = S.v0 + (S.v1 - S.v0) * iy / (K - 1);
+              if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+              const tx = Math.min(63, Math.round(u * 63));
+              const ty = Math.min(63, Math.round(v * 63));
+              const val = _lumBuf64[(ty * 64 + tx) * 4];
+              sA2 += val; nA++;
+              if (val > LIT) { sL += val; nL++; }
+            }
+            if (nA >= 5 && nL >= 8) lS = 0.5 * (sL / nL + sA2 / nA);
+          }
+          hdrLumS = lS;
+        }
+      }
+      // 4b) 统一合成：场景 + bloom（线性域加色，光晕参与曝光）→ ×E×2^EV →
+      //     ACES → sRGB → dither → rtLDR（材质级注入在管线期休眠，无双重映射）
+      P.matCompHdr.uniforms.tex.value = P.rtScene.texture;
+      P.matCompHdr.uniforms.b1.value = P.rtSun.texture;
+      P.matCompHdr.uniforms.b2.value = P.rtQuaA.texture;
+      P.matCompHdr.uniforms.b3.value = P.rtEigA.texture;
+      P.matCompHdr.uniforms.uE.value = hdrU.uExposure.value;
+      P.matCompHdr.uniforms.uEv.value = hdrCfg.ev;
+      postPass(P.matCompHdr, P.rtLDR);
+      // 4c) FXAA：rtLDR → 画布（rtScene 无 MSAA 的锯齿补偿）
+      P.matFXAA.uniforms.tex.value = P.rtLDR.texture;
+      P.matFXAA.uniforms.uTexel.value.set(1 / P.rtLDR.width, 1 / P.rtLDR.height);
+      postPass(P.matFXAA, null);
+    } else {
+      // 4') 回退：bloom 加色合成回画布（场景已在步骤 1 绘好，禁清屏避免抹掉场景）
+      P.matComp.uniforms.b1.value = P.rtSun.texture;
+      P.matComp.uniforms.b2.value = P.rtQuaA.texture;
+      P.matComp.uniforms.b3.value = P.rtEigA.texture;
+      renderer.autoClear = false;
+      postPass(P.matComp, null);
+      renderer.autoClear = true;
+    }
   }
 
   function render() {
+    bakeLiveEnv();   // 实时环境烘焙（自门禁：真实光照 + 飞船可见 + 帧节流）
     // __forceDirect：调试/逃生开关——真实光照下绕过后处理链直接绘原画布
     //（对比 RT 链路与直绘的逐位一致性；亦供低端机出问题时手动关闭后处理）
     if (realisticOn && !window.__forceDirect) { renderPost(); return; }
+    hdrPathOn = false;   // 直绘路径显式下线管线态——updateHdrExposure 的测光
+                         // 选择随之走解析回退（否则读到冻结的 RT 测光值）
     renderer.setRenderTarget(null);
     renderer.render(scene, camera);
   }
@@ -3993,7 +4961,14 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
 
   window.CassiniScene = {
     init, updatePositions, updateRender, render, updateLabels, screenPosOf, setCassiniLabel,
-    setRealisticLighting, setTrailOptions, setLabelsVisible, viewOccluded,
+    setRealisticLighting, setHdr, setTrailOptions, setLabelsVisible, viewOccluded,
+    isLabelsVisible: () => labelsVisible,   // 供 huygens.js 标签块读取开关状态（其标签逐帧自管，无法被 updateLabels 代管）
+    hdr: hdrU,   // 调试/测试：uHdrOn/uExposure 可读写（probe_hdr.js 读数取证）
+    get hdrLum() { return hdrLum; },           // 测光链实测亮度（RT 管线，线性）
+    get hdrLumS() { return hdrLumS; },         // 聚焦天体盒实测亮度（-1=无有效盒）
+    analyticKey: analyticHdrKey,               // 解析测光估计（回退路径同款，调试标定）
+    analyticSubject: analyticSubjectLum,       // 解析聚焦天体亮度估计（回退路径）
+    hdrCfg,      // HDR 标定（key/tau/min/max/ev/star 可运行时调整；EV 滑杆写 ev）
     get registry() { return registry; },
     get camera() { return camera; },
     get scene() { return scene; },
@@ -4006,6 +4981,7 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     get shineEcl() { return SHINE_ECL; },      // item 7 暗面残差系数（可写，A/B：置 0 关闭）
     get postDebug() { return post; },          // 后处理链状态（调试：hdr/rtSun/uniforms）
     get rendererRef() { return renderer; },    // 调试探针：WebGLRenderer 句柄（program dump）
+    get liveEnvRT() { return liveCubeRT; },    // 调试探针：实时环境 cube RT（readback/标定）
     get ringOccU() { return ringOccU; },       // 轨迹线解析环遮挡 uniforms（调试/AB 对照）
     get ringOccList() { return ringOccList; },
     setCameraWorld(v) { camWorld.x = v[0]; camWorld.y = v[1]; camWorld.z = v[2]; },

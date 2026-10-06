@@ -152,12 +152,46 @@
 
   // 真实光照开关（阴影处完全不反光）
   const lightBtn = document.getElementById('lighting-btn');
+  const hudRender = document.getElementById('hud-render');
   let realLight = false;
+  let hdrOn = false;
+  /* HUD 渲染模式徽标：真实光照/HDR 状态常驻状态卡（20261010e）——设置面板
+   * 关闭后开关状态不可见，用户截图无法自证模式（「打开真实光照后背光面
+   * 依旧亮」排查中无法远端判定开关是否生效，教训：状态必须上图） */
+  function syncRenderBadge() {
+    if (!hudRender) return;
+    const mode = realLight ? '真实光照' : '普通';
+    const hdr = hdrOn ? ' + HDR' : '';
+    // 追加 scene 版本号：截图自证运行版本（20261010h，排查「改了没生效」的缓存歧义）
+    const ver = (window.CassiniVersions && window.CassiniVersions.scene) || '?';
+    hudRender.innerHTML = `渲染: <b>${mode}${hdr}</b> · ${ver}`;
+  }
+  syncRenderBadge();
   lightBtn.addEventListener('click', () => {
     realLight = !realLight;
     scene.setRealisticLighting(realLight);
     lightBtn.classList.toggle('on', realLight);
     lightBtn.setAttribute('aria-checked', String(realLight));
+    syncRenderBadge();
+  });
+
+  // HDR 自适应曝光开关（自动视野亮度 + 电影级色调曲线，模拟人眼明暗适应）
+  const hdrBtn = document.getElementById('hdr-btn');
+  hdrBtn.addEventListener('click', () => {
+    hdrOn = !hdrOn;
+    scene.setHdr(hdrOn);
+    hdrBtn.classList.toggle('on', hdrOn);
+    hdrBtn.setAttribute('aria-checked', String(hdrOn));
+    syncRenderBadge();
+  });
+
+  // HDR 手动曝光补偿（±2 EV，叠在自动曝光上；scene.hdrCfg.ev 即时生效）
+  const hdrEv = document.getElementById('hdr-ev');
+  const hdrEvVal = document.getElementById('hdr-ev-val');
+  hdrEv.addEventListener('input', () => {
+    const v = parseFloat(hdrEv.value);
+    scene.hdrCfg.ev = v;
+    hdrEvVal.textContent = (v >= 0 ? '+' : '') + v.toFixed(1);
   });
 
   // 天体标签显隐开关（行星 / 卫星 / Cassini 名称标签）
