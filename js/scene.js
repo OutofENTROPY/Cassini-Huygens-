@@ -1391,6 +1391,57 @@
       (prevKey ? prevKey.call(mat) : '') + '+shoulder' + (tag || '');
   }
 
+  /* —— 晨昏线半影（item 6，仅真实光照）——
+   * 物理图像：行星表面照度 = cos(入射角) × 日面可见比例。有限日面（角半径
+   * θs，行星处 ~1e-3 rad）只让明暗界线在 |dotNL| ≲ θs 内再模糊一点，而
+   * Lambert 余弦坡本身横跨 90° 入射弧——dotNL 0→0.35 的暗尾（感知上的暮色
+   * 漫泛区）才是「晨昏线发糊」的主因。本项给太阳点光直射乘日面可见因子
+   * P = smoothstep(-uPenW, uPenW, dotNL)：dotNL > uPenW 区域逐位不变，
+   * < -uPenW 严格归零，中间暗尾平滑截断 → 明暗界线贴紧几何晨昏线。
+   * uPenW 取 0.35（实测标定，见 .workbuddy/tools/probe_terminator.js）：
+   * 物理 θs（行星处 7e-4 ~ 4.7e-3 rad）远小于 8-bit 可辨阈——按真值实现带宽
+   * < 0.1 px，A/B 截图逐位零差（且亚像素硬边反而引发着色闪烁，MSAA 只平滑
+   * 几何边、不平滑着色渐变）；0.35 时暮色带（dotNL 0.05~0.35）压深 10~16%、
+   * 亮缘（>0.5）逐位不变，晨昏线明暗界线明显贴紧几何晨昏线。风格化宽度，
+   * 近似真实影像中「暗部 S 曲线 + 地表散射吃掉暮色」的观感；不做逐日距
+   * 解算（各行星 θs 全部远低于下限）。
+   * 门禁：效果类 → uPenOn 仅真实光照置 1/0（updateRender 逐帧刷新，
+   * uSatShade 同款；uPenOn=0 时 mix 回 1.0，off 路径逐位回退）。
+   * 注入：链在 excludeDirLight 之后（行星直射只剩太阳点光），此时 fragment
+   * 内 '#include <lights_fragment_begin>' 已被 prev 展开为 LF_BEGIN_NODIR
+   * 全文——直接以该文本串为锚替换为附加半影行的 LF_BEGIN_PEN；仅点光块
+   * 乘因子（平行光块在行星材质内已归零）。tag 同 excludeDirLight 契约
+   * （program 缓存防错配）。作用对象 = 全部非 emissive 天体（行星+卫星）
+   * 表面与云层；环材质着色含自身晨昏语义、大气 rim/wash 自带 smoothstep
+   * 昼夜权重，均不参与。 */
+  const PEN_W = 0.35;
+  const LF_BEGIN_PEN = (() => {
+    const out = LF_BEGIN_NODIR.replace(
+      'getPointLightInfo( pointLight, geometry, directLight );',
+      'getPointLightInfo( pointLight, geometry, directLight );\n\t\t\tdirectLight.color *= mix( 1.0, smoothstep( - uPenW, uPenW, dot( geometry.normal, directLight.direction ) ), uPenOn );');
+    if (out === LF_BEGIN_NODIR) console.warn('applyPenumbra: point light 锚点未命中');
+    return out;
+  })();
+  function applyPenumbra(mat, tag, penU) {
+    if (!penU) penU = {
+      uPenOn: { value: realisticOn ? 1 : 0 },
+      uPenW: { value: PEN_W },
+    };
+    mat.userData.penU = penU;
+    const prevCompile = mat.onBeforeCompile;
+    mat.onBeforeCompile = (shader, r) => {
+      if (prevCompile) prevCompile(shader, r);
+      const fs = shader.fragmentShader.replace(LF_BEGIN_NODIR, LF_BEGIN_PEN);
+      if (fs === shader.fragmentShader) console.warn('applyPenumbra: LF_BEGIN_NODIR 锚点未命中', tag);
+      shader.uniforms.uPenOn = penU.uPenOn;
+      shader.uniforms.uPenW = penU.uPenW;
+      shader.fragmentShader = 'uniform float uPenOn;\nuniform float uPenW;\n' + fs;
+    };
+    const prevKey = mat.customProgramCacheKey;
+    mat.customProgramCacheKey = () =>
+      (prevKey ? prevKey.call(mat) : '') + '+pen' + (tag || '');
+  }
+
   /* —— 卫星凌日投影（item 3）——
    * 卫星经过太阳与行星之间时，在母行星表面/云层投下影斑：逐片元对「片元→太阳」
    * 射线做与每颗卫星（正球近似，半径 = 赤道半径）的最近距判定，命中则本影遮挡
@@ -1937,9 +1988,14 @@
       if (!def.emissive) {
         excludeDirLight(mat);                             // 行星表面：忽略飞船平行光
         applySoftShoulder(mat, 'surf');                   // 高光软肩（削顶修复，仅真实光照）
+        // item 6 晨昏线半影：同一 penU 共享给表面/云层（updateRender 只刷一份）
+        const penU = { uPenOn: { value: realisticOn ? 1 : 0 }, uPenW: { value: PEN_W } };
+        entry.penU = penU;
+        applyPenumbra(mat, 'surf', penU);
         if (entry.clouds) {
           excludeDirLight(entry.clouds.material);
           applySoftShoulder(entry.clouds.material, 'cloud');
+          applyPenumbra(entry.clouds.material, 'cloud', penU);
         }
       }
       scene.add(group);
@@ -2513,6 +2569,8 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
         u.uSunPos.value.set(-camWorld.x, -camWorld.y, -camWorld.z);
         u.uPlanetPos.value.copy(entry.group.position);
       }
+      // 晨昏线半影（item 6）：门禁随模式切换（效果类仅真实光照，uSatShade 同款）
+      if (entry.penU) entry.penU.uPenOn.value = realisticOn ? 1 : 0;
       // 卫星凌日投影（item 3，见 applySatTransit 注释）：uSatShade 按门禁规则
       // 仅真实光照置 1/0；卫星场景系位置 = group.position（updatePositions 已更新）
       if (entry.satU) {

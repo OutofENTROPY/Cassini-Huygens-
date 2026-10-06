@@ -22,7 +22,7 @@
     three: '2026094', gltf: '2026103', tex: '2026401', stars: '2026094',
     cassini: '2026105', moons: '2026105', attitude: '2026301', models: '2026303',
     events: '2026405', jtex: '2026103',     huygens: '20261005a', cmodel: '20261006d',
-    scene: '20261006d', camera: '20261004a', timeline: '20261004c', main: '20261004e',
+    scene: '20261006e', camera: '20261004a', timeline: '20261004c', main: '20261004e',
   };
   console.log('[Cassini] module versions:', JSON.stringify(V));   // 自查缓存：控制台应出现本行且 scene 为最新
   var MANIFEST = [
