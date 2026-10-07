@@ -210,6 +210,85 @@ body { touch-action: manipulation; }
   gap: 10px; padding: 1px 2px;
   font-size: 12.5px; font-weight: 500; color: var(--text);
 }
+/* 行首标签 + 内联说明钮（如 HDR 行：文字与 ⓘ 贴排，右侧留给开关） */
+.row-label {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+/* ⓘ 详细说明圆钮：与右上角圆形图标按钮（#btn-help）同款玻璃样式，尺寸适配行内 */
+.info-btn {
+  width: 24px; height: 24px; padding: 0; flex: none;
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--glass); border: 1px solid var(--stroke);
+  color: var(--text-2); cursor: pointer; user-select: none;
+  transition: background-color .35s var(--ease), color .35s var(--ease), transform .15s var(--ease);
+  backdrop-filter: var(--blur-btn); -webkit-backdrop-filter: var(--blur-btn);
+  box-shadow: var(--shadow-1);
+}
+.info-btn svg { width: 13px; height: 13px; }
+.info-btn:hover { color: var(--text); background: var(--glass-hover); }
+.info-btn:active { transform: scale(0.94); }
+.info-btn.active {
+  color: var(--primary-bright);
+  background: var(--primary-soft);
+  border-color: rgba(52, 130, 255, 0.45);
+}
+
+/* HDR 详细说明卡：fixed 浮层，锚在设置面板左侧。× 绝对定位钉死卡角（不随内容滚动），
+   内容滚动在内层 #hdr-info-body；浮层不进设置面板布局流（曝光 EV 滑块不受展开影响） */
+#hdr-info-card {
+  --card-h: calc(100vh - 54px - 166px);
+  --card-h: calc(100dvh - 54px - 166px);
+  position: fixed; top: 54px; right: 208px; z-index: 60;
+  width: min(320px, calc(100vw - 32px));
+  background: var(--panel-strong); border: 1px solid var(--stroke);
+  border-radius: var(--r-md); padding: 0;
+  backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), var(--shadow-2);
+  transform-origin: top right;
+  opacity: 1;
+  transition: opacity .22s var(--ease), transform .25s var(--spring), display .3s allow-discrete;
+}
+#hdr-info-body {
+  max-height: calc(var(--card-h) - 2px);   /* 减上下边框 */
+  overflow-y: auto; overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.22) transparent;
+  padding: 16px 16px 14px;
+  border-radius: inherit;
+  /* 滚动条移到卡片左侧：容器 rtl + 内容还原 ltr（滚动条跟随书写方向贴左） */
+  direction: rtl;
+}
+#hdr-info-body > * { direction: ltr; }
+#hdr-info-body::-webkit-scrollbar { width: 4px; }
+#hdr-info-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); border-radius: 2px; }
+#hdr-info-body::-webkit-scrollbar-track { background: transparent; }
+#hdr-info-card.hidden { display: none; opacity: 0; transform: scale(0.94) translateY(-6px); }
+@starting-style {
+  #hdr-info-card:not(.hidden) { opacity: 0; transform: scale(0.94) translateY(-6px); }
+}
+#hdr-info-card h4 {
+  margin: 10px 0 4px; font-size: 11px; font-weight: 700;
+  letter-spacing: 1.5px; text-transform: uppercase; color: #f0a13c;
+}
+#hdr-info-card h4:first-of-type { margin-top: 2px; }
+#hdr-info-card p {
+  margin: 0 0 6px; font-size: 12px; line-height: 1.65; color: var(--text);
+}
+#hdr-info-card p b { color: #cfe0f5; }
+#hdr-info-close {
+  position: absolute; top: 5px; right: 5px; z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  border-radius: var(--r-full); border: 1px solid var(--stroke);
+  /* 毛玻璃但基本不透字：高不透明度底色 + 背景模糊，滚动文字只留下极淡的光影 */
+  background: rgba(24, 24, 28, 0.88); color: var(--text-2);
+  cursor: pointer;
+  backdrop-filter: var(--blur-btn); -webkit-backdrop-filter: var(--blur-btn);
+}
+#hdr-info-close svg { width: 13px; height: 13px; display: block; }
+#hdr-info-close:hover { background: rgba(58, 58, 66, 0.92); color: var(--text); }
 /* miuix 拨动开关：HyperOS 椭圆轨道 + 白色圆钮，开启即主色填充 */
 .switch {
   position: relative; flex: none;
@@ -630,6 +709,14 @@ body.event-open:not(.event-folded) #event-fab {
     max-height: calc(100dvh - 54px - 150px);
   }
 
+  /* HDR 说明卡：窄屏改为屏幕居中浮层（右侧锚点会溢出左边界），底部预留同步收紧 */
+  #hdr-info-card {
+    right: auto; left: 50%; transform: translateX(-50%);
+    --card-h: calc(100vh - 54px - 150px);
+    --card-h: calc(100dvh - 54px - 150px);
+  }
+  #hdr-info-card.hidden { transform: translateX(-50%) scale(0.94) translateY(-6px); }
+
   /* 事件卡：左下角（时间轴上方），收紧留白避免窄屏溢出 */
   #event-card { left: 10px; bottom: 142px; padding: 13px 15px 13px 17px; }
   #topbar { padding: 10px 12px; }
@@ -651,6 +738,11 @@ body.event-open:not(.event-folded) #event-fab {
       top: 46px;
       max-height: calc(100vh - 46px - 136px);
       max-height: calc(100dvh - 46px - 136px);
+    }
+    #hdr-info-card {
+      top: 46px;
+      --card-h: calc(100vh - 46px - 136px);
+      --card-h: calc(100dvh - 46px - 136px);
     }
     #hud-stack { top: 46px; }
     #rate-wrap { width: 46vw; }
