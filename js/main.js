@@ -158,10 +158,13 @@
   /* HUD 渲染模式徽标：真实光照/HDR 状态常驻状态卡（20261010e）——设置面板
    * 关闭后开关状态不可见，用户截图无法自证模式（「打开真实光照后背光面
    * 依旧亮」排查中无法远端判定开关是否生效，教训：状态必须上图） */
-  function syncRenderBadge() {
+  function syncRenderBadge(pathLabel) {
     if (!hudRender) return;
     const mode = realLight ? '真实光照' : '普通';
-    const hdr = hdrOn ? ' + HDR' : '';
+    // HDR 实际路径自证（20261010m）：开 HDR ≠ 必走 RT 管线（缺浮点扩展/WebKit
+    // 会静默回退直绘）——手机端「同开关不同设备效果不同」排查中无法远端判定
+    // 走的哪条链，教训：管线激活态必须上图。pathLabel 由 HUD 循环每 4 帧刷新。
+    const hdr = hdrOn ? (pathLabel ? ` + HDR(${pathLabel})` : ' + HDR') : '';
     // 追加 scene 版本号：截图自证运行版本（20261010h，排查「改了没生效」的缓存歧义）
     const ver = (window.CassiniVersions && window.CassiniVersions.scene) || '?';
     hudRender.innerHTML = `渲染: <b>${mode}${hdr}</b> · ${ver}`;
@@ -182,6 +185,7 @@
     scene.setHdr(hdrOn);
     hdrBtn.classList.toggle('on', hdrOn);
     hdrBtn.setAttribute('aria-checked', String(hdrOn));
+    _lastPathLabel = null;   // 强制下一轮 HUD 同步重写路径标签
     syncRenderBadge();
   });
 
@@ -263,6 +267,28 @@
     }
   });
 
+  // HDR 详细说明卡：ⓘ 开合，点卡外 / × / Esc 关闭；卡为 fixed 浮层，
+  // 不进设置面板布局流（曝光 EV 滑块位置不受展开影响）；卡上点击不冒泡，
+  // 避免触发「点面板外收起设置面板」的全局 handler
+  const hdrInfoBtn = document.getElementById('hdr-info-btn');
+  const hdrInfoCard = document.getElementById('hdr-info-card');
+  const setHdrInfo = (open) => {
+    hdrInfoCard.classList.toggle('hidden', !open);
+    hdrInfoBtn.classList.toggle('active', open);
+  };
+  hdrInfoBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setHdrInfo(hdrInfoCard.classList.contains('hidden'));
+  });
+  hdrInfoCard.addEventListener('click', (e) => e.stopPropagation());
+  document.getElementById('hdr-info-close').addEventListener('click', () => setHdrInfo(false));
+  document.addEventListener('click', (e) => {
+    if (!hdrInfoCard.classList.contains('hidden')) setHdrInfo(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !hdrInfoCard.classList.contains('hidden')) setHdrInfo(false);
+  });
+
   // HUD
   const hudDate = document.getElementById('hud-date');
   const hudPhase = document.getElementById('hud-phase');
@@ -311,9 +337,8 @@
       biRows.appendChild(biSpinRow);
     }
     bodyInfo.classList.remove('hidden');
-    // 状态卡片折叠时，点击星体自动展开 ◉ 按钮下的状态卡
-    document.body.classList.add('hud-open');
-    hudToggle.classList.add('active');
+    // 保持用户对状态卡的展开/收起选择：点选天体只更新内容，不强制展开；
+    // 用户点 ◉ 按钮自行展开时，看到的是当前聚焦天体的最新状态
   }
 
   // 任务阶段（专业术语）
@@ -445,6 +470,7 @@
   // ---------- 主循环 ----------
   let lastT = performance.now();
   let frame = 0;
+  let _lastPathLabel = null;   // HUD 徽标 HDR 路径标签缓存（值变才写 DOM，20261010m）
   const bodyWorldCache = {};
   const _pv = [0, 0, 0];
 
@@ -480,6 +506,11 @@
 
     // HUD（每 4 帧）
     if ((frame++ & 3) === 0) {
+      // HDR 管线激活态跟帧同步进徽标（值变才写 DOM；scene.hdrPathActive 为上一帧态）
+      if (hdrOn && scene.hdrPathActive !== undefined) {
+        const pl = scene.hdrPathActive ? 'RT' : '回退';
+        if (pl !== _lastPathLabel) { _lastPathLabel = pl; syncRenderBadge(pl); }
+      }
       const ds = fmtDate(t);
       hudDate.textContent = ds;
       hudPhase.textContent = phaseAt(t);

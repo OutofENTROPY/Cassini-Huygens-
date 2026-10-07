@@ -75,6 +75,7 @@
       for (let n = e.target; n && n !== document && n.nodeType === 1; n = n.parentNode) {
         if (n === canvas) break;   // 3D 视口内的元素（canvas / #labels / .label / 标记）一律缩放
         if (n.id === 'labels') break;
+        if (n.id === 'hdr-info-card') return;   // 说明卡浮层：内容不超高也禁缩放（滚轮只滚卡/不滚）
         const t = n.tagName;
         if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA' || t === 'BUTTON') return;
         if (n.scrollHeight > n.clientHeight + 1 && n.clientHeight > 0) return;   // 可纵向滚动容器

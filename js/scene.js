@@ -4545,12 +4545,25 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
       try { hdr = !!renderer.extensions.get('EXT_color_buffer_float'); } catch (e) { hdr = false; }
     }
     // 一律不开 MSAA：模糊源无需抗锯齿，且 RT MSAA resolve 在 WebKit 下有零块缺陷
-    const mkRT = (w, h, depth) => new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
-      minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: hdr ? THREE.HalfFloatType : THREE.UnsignedByteType,
-      depthBuffer: depth, stencilBuffer: false,
-    });
+    const isGL2 = renderer.capabilities.isWebGL2;
+    const mkRT = (w, h, depth) => {
+      const rt = new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
+        minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+        format: THREE.RGBAFormat,
+        type: hdr ? THREE.HalfFloatType : THREE.UnsignedByteType,
+        depthBuffer: depth, stencilBuffer: false,
+      });
+      /* 20261010m：r147 对 RT 深度缓冲写死 DEPTH_COMPONENT16（解码 setupDepthRenderbuffer
+       * 证实：仅当挂 depthTexture 才升 D24）。logdepth 下 D16 台阶在 6cm 特写距离
+       * ≈0.5 m 视深、18 m 整船仅 ~37 级——严格执行的 GPU（Adreno，骁龙 8 Gen 5 手机
+       * 实测）自遮挡随机翻转成放射状黑楔；桌面 ANGLE→D3D11 悄悄升 ≥D24、Mali tile
+       * 深度不量化，问题被掩盖（设备矩阵见 2026-10-07 日志）。挂 UnsignedIntType
+       * DepthTexture（r147 映射 GL_DEPTH_COMPONENT24）只为存储格式、不参与采样；
+       * resize 由 r147 setupDepthTexture 比对 dims 自动重建。仅 WebGL2 挂
+       * （WebGL1 需额外扩展，且本应用 WebKit/回退分支不走 RT 场景链）。 */
+      if (depth && isGL2) rt.depthTexture = new THREE.DepthTexture(Math.max(1, w), Math.max(1, h));
+      return rt;
+    };
     const w = size.x, h = size.y;
     const P = {
       hdr,
@@ -4966,6 +4979,7 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     hdr: hdrU,   // 调试/测试：uHdrOn/uExposure 可读写（probe_hdr.js 读数取证）
     get hdrLum() { return hdrLum; },           // 测光链实测亮度（RT 管线，线性）
     get hdrLumS() { return hdrLumS; },         // 聚焦天体盒实测亮度（-1=无有效盒）
+    get hdrPathActive() { return hdrPathOn; }, // 上一帧 HDR 实际走 RT 管线？(false=回退直绘；HUD 徽标自证，20261010m)
     analyticKey: analyticHdrKey,               // 解析测光估计（回退路径同款，调试标定）
     analyticSubject: analyticSubjectLum,       // 解析聚焦天体亮度估计（回退路径）
     hdrCfg,      // HDR 标定（key/tau/min/max/ev/star 可运行时调整；EV 滑杆写 ev）
