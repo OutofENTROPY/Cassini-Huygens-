@@ -677,52 +677,30 @@
   }
   /* 根数关键帧选取：取 t 之前的最后一帧（而非最近帧）。各关键帧 M0 相互独立
    * 拟合、不连续（实测 Mimas 相邻帧位置可差 6.2 万 km、Rhea 47 万 km）——
-   * 最近帧选取在时间推进中每半个帧距翻转一次，轨道线随之整条跳位（卫星
-   * 轨迹抖动的根源）。帧间连续性改由下面的窗口混合保证：跨界处 w→1 与下一
-   * 窗口 w→0 的混合位置重合，选取翻转不再产生跳变。 */
+   * 最近帧选取在时间推进中每半个帧距翻转一次，轨道环随之整条跳位（卫星
+   * 轨迹抖动的根源）。末帧钳制必须返回 hi（末帧本身）：返回 hi−1 会让越界
+   * 外推悬在「倒数第二帧」上，且环几何回退（rebuildOrbitLine 单帧整环）与
+   * Δ 修正（ellipsePosEcl）都会用错帧。 */
   function elemsKeyLo(entry, t) {
     const eT = entry.elems.eT;
     let lo = 0, hi = eT.length - 1;
     if (t <= eT[0]) return 0;
-    if (t >= eT[hi]) return hi - 1;   // 末帧保留外推语义
+    if (t >= eT[hi]) return hi;
     while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (eT[mid] <= t) lo = mid; else hi = mid; }
     return lo;
   }
-  /* 关键帧间位置混合：单帧椭圆按 M0 + n·(t−eT[k]) 外推的拟合误差随窗口内
-   * 位置增长，且相邻帧反号（一帧超前、一帧滞后）。按 w = (t−eT[k])/(帧距)
-   * 线性混合前后两帧的预测位置，误差几乎完全抵消——实测 6h 步长跨整窗口
-   * 采样（中位/最大，km）：Mimas 20,174/37,978 → 617/883、Enceladus
-   * 10,314/19,823 → 351/760、Tethys 6,871/11,429 → 543/646、Titan 73/270 →
-   * 32/40。w≤0（首帧之前）与 k+1 越界退化为单帧外推（原行为）。 */
-  function blendPosAtTime(entry, t, out) {
-    const els = entry.elems, eT = els.eT, eV = els.eV;
-    const k = elemsKeyLo(entry, t);
-    let o = k * 8;
-    const v = elemPosEcl(eV[o], eV[o + 1], eV[o + 2], eV[o + 3],
-      eV[o + 4], eV[o + 5], eV[o + 6], eV[o + 7],
-      eV[o + 3] + eV[o + 2] * (t - eT[k]));
-    out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
-    if (k + 1 >= eT.length) return out;
-    const w = (t - eT[k]) / (eT[k + 1] - eT[k]);
-    if (w <= 0) return out;
-    o += 8;
-    const v2 = elemPosEcl(eV[o], eV[o + 1], eV[o + 2], eV[o + 3],
-      eV[o + 4], eV[o + 5], eV[o + 6], eV[o + 7],
-      eV[o + 3] + eV[o + 2] * (t - eT[k + 1]));
-    out[0] += (v2[0] - out[0]) * w;
-    out[1] += (v2[1] - out[1]) * w;
-    out[2] += (v2[2] - out[2]) * w;
-    return out;
-  }
   /* 轨道环重建：顶点按【时刻】均布（t_i = t + (i/N−0.5)·P，N/2 号顶点恰为
-   * 当前时刻），环几何优先取天体历表轨迹 track.at(t_i)——即天体的真实路径，
-   * 与渲染端定位（updatePositions 的 entry.track.at）同源同精度：环心严格
-   * 位于母体（Δ≡0）、交点亚 km 贴合，且精度与重建节奏无关——快进/倒退时
-   * 轨道线不再随时间漂移。真实路径逐圈进动/摄动偏差 ~0.1% 轨道半径（Mimas
-   * 逐圈 ~0.16 km 进动），视觉上与椭圆无异。无轨迹段时回退根数混合
-   * （blendPosAtTime，Mimas 残差 ~0.6k km）。平近点角锚点 _orbitMt/_orbitK
-   * 仍取根数关键帧：仅 applyOrbitFade 的年龄推进使用（dph 用同帧外推，帧间
-   * 严格连续），不参与环几何。 */
+   * 当前时刻）。环时间域被历表轨迹覆盖域完整包含时（卫星、内行星），环几何
+   * 取 track.at(t_i) 真实路径——与渲染端定位（updatePositions 的 entry.track.at）
+   * 同源同精度：环心严格位于母体（Δ≡0）、交点亚 km 贴合，且精度与重建节奏
+   * 无关。覆盖不住时（长周期行星环跨出轨迹/根数域）整环退化为【单一关键帧】
+   * （elemsKeyLo(t) 帧）的密切椭圆：此前逐顶点回退（域内 track、域外根数混合）
+   * 时，环左端用首帧外推、右端用末帧外推——两条拟合椭圆在 ±半个公转周期外
+   * 可差 ~0.7 AU（海王星 a：首帧 30.26 vs 末帧 30.03 AU），闭合缝在行星对侧
+   * 形成 70–90° 折角（天王星/海王星「轨道不闭合」的根源）。单帧整环几何恒
+   * 闭合光滑，天体当前位置贴合误差 = 该帧拟合残差（亚像素），与 NASA Eyes
+   * 「当前密切轨道」语义一致。平近点角锚点 _orbitMt/_orbitK 与环几何同帧：
+   * applyOrbitFade 的年龄推进与 N/2 顶点严格对位。 */
   function rebuildOrbitLine(entry, t) {
     const els = entry.elems;
     if (!els || els.n < 2) return;
@@ -737,10 +715,8 @@
     const dtV = TAU / (n * N);      // 相邻顶点的时间间隔（s）：一周 N 等分 → 时刻均匀
     const t0 = t - 0.5 * dtV * N;   // 顶点 0 的时刻
     const _v = [0, 0, 0];
+    let trackOk = false;
     if (entry.track && entry.track.segs && entry.track.segs.length) {
-      entry._orbitTrack = true;
-      // 轨迹段覆盖域之外的顶点（时间域两端半个公转周期内）回退根数外推：
-      // track.at 越界会把顶点钳制堆积在段端点，环的远半圈塌缩
       if (entry._trackLo === undefined) {
         let tLo = Infinity, tHi = -Infinity;
         for (const sg of entry.track.segs) {
@@ -751,30 +727,44 @@
         entry._trackLo = tLo;
         entry._trackHi = tHi;
       }
+      trackOk = t0 >= entry._trackLo && t0 + dtV * N <= entry._trackHi;
+    }
+    if (trackOk) {
+      entry._orbitTrack = true;
       for (let i = 0; i < N; i++) {
-        const ti = t0 + i * dtV;
-        if (ti < entry._trackLo || ti > entry._trackHi) blendPosAtTime(entry, ti, _v);
-        else entry.track.at(ti, _v);
+        entry.track.at(t0 + i * dtV, _v);
         const w = eclToThree(_v);
         attr.setXYZ(i, w[0], w[1], w[2]);
       }
     } else {
+      // 整环单帧密切椭圆（帧固定为 k，杜绝跨帧拼接缝；e≥1 双曲线同式成立）
       entry._orbitTrack = false;
+      const a = els.eV[o], e = els.eV[o + 1];
+      const qw = els.eV[o + 4], qx = els.eV[o + 5], qy = els.eV[o + 6], qz = els.eV[o + 7];
       for (let i = 0; i < N; i++) {
-        blendPosAtTime(entry, t0 + i * dtV, _v);
-        const w = eclToThree(_v);
+        const ti = t0 + i * dtV;
+        const p = elemPosEcl(a, e, n, M0, qw, qx, qy, qz, M0 + n * (ti - els.eT[k]));
+        const w = eclToThree(p);
         attr.setXYZ(i, w[0], w[1], w[2]);
       }
     }
     attr.needsUpdate = true;
     entry._orbitEpoch = t;
   }
-  /* 根数回退路径用：当前时刻的根数预测位置（关键帧混合，与几何重建同源）。
-   * 仅当天体无历表轨迹段时才走此路径计算平移修正 Δ。 */
+  /* 根数回退路径用：当前时刻的单帧根数预测位置（与环几何回退路径同帧同源，
+   * 平移修正 Δ = 实际历表位置 − 本函数值，把环的 N/2 顶点精确搬到天体上）。
+   * 帧必须取几何重建时锁定的 _orbitK：若用实时 elemsKeyLo(t)，t 跨过帧边界
+   * 瞬间 Δ 跳变量 = 相邻帧同刻分歧（Mimas 实测可达 6.2 万 km），环会整体
+   * 弹跳直到下次重建；锁帧后 Δ 随时间连续变化，与几何严格同源。 */
   function ellipsePosEcl(entry, t, out) {
     const els = entry.elems;
     if (!els || els.n < 2) return false;
-    blendPosAtTime(entry, t, out);
+    const k = entry._orbitK !== undefined ? entry._orbitK : elemsKeyLo(entry, t);
+    const o = k * 8;
+    const p = elemPosEcl(els.eV[o], els.eV[o + 1], els.eV[o + 2], els.eV[o + 3],
+      els.eV[o + 4], els.eV[o + 5], els.eV[o + 6], els.eV[o + 7],
+      els.eV[o + 3] + els.eV[o + 2] * (t - els.eT[k]));
+    out[0] = p[0]; out[1] = p[1]; out[2] = p[2];
     return true;
   }
 
@@ -3041,9 +3031,11 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     }
 
     // ---- 轨道线与行星严格重合（item 8）----
-    // 环几何优先取历表轨迹（真路径，与天体渲染定位同源）——环心严格位于母体
-    // （Δ≡0）、交点亚 km，精度与重建节奏无关；无轨迹段的天体回退根数混合 +
-    // 平移修正 Δ。聚焦天体每帧重建，其余按陈旧度阈值重建（卫星即时、行星错峰）。
+    // 环时间域被历表轨迹完整覆盖时取真路径（与天体渲染定位同源）——环心严格
+    // 位于母体（Δ≡0）、交点亚 km，精度与重建节奏无关；覆盖不住（长周期行星
+    // 环跨出域）或无轨迹段的天体整环退化为单帧密切椭圆（跨帧拼接会在闭合点
+    // 留 70–90° 折角）+ 平移修正 Δ。聚焦天体每帧重建，其余按陈旧度阈值重建
+    // （卫星即时、行星错峰）。
     const focusName = (window.CassiniCamera && window.CassiniCamera.currentFocus()) || null;
     const _act = [0, 0, 0], _ell = [0, 0, 0];
     let orbIdx = 0;
@@ -3088,8 +3080,8 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
           entry.orbitLineObj.position.set(-camWorld.x, -camWorld.y, -camWorld.z);
         }
       } else if (entry.track) {
-        // 根数回退路径：Δ = 实际历表位置 − 混合预测位置，逐帧平移把交点
-        // 精确搬到天体上
+        // 根数回退路径：Δ = 实际历表位置 − 单帧根数预测位置（与环几何同帧），
+        // 逐帧平移把交点精确搬到天体上
         entry.track.at(t, _act);
         if (!ellipsePosEcl(entry, t, _ell)) continue;
         const dx = _act[0] - _ell[0], dy = _act[1] - _ell[1], dz = _act[2] - _ell[2];
