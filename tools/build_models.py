@@ -31,6 +31,47 @@ IMAGES = [
     "cassini_pbr.jpg",
 ]
 
+# 逐顶点 AO sidecar（tools/bake_ao.py 产物）：存在时为每个 primitive 注入
+# 自定义属性 _AO（u8 SCALAR normalized；glTF 规范要求自定义属性下划线前缀，
+# GLTFLoader r147 落为 geometry.attributes._ao）。键 = "<mesh索引>_<prim索引>"
+AO_SIDECAR = os.path.join(SRC, "ao_vertices.json")
+
+
+def inject_ao(gltf, blob):
+    """把 _AO 顶点属性追加进 BIN 块并挂到每个 primitive。返回新 blob。"""
+    side = json.load(open(AO_SIDECAR, encoding="utf-8"))
+    blob = bytearray(blob)
+    buffer_views = gltf.setdefault("bufferViews", [])
+    accessors = gltf.setdefault("accessors", [])
+    n_injected = 0
+    for mi, mesh in enumerate(gltf["meshes"]):
+        for pi, prim in enumerate(mesh["primitives"]):
+            vals = side["prims"].get(f"{mi}_{pi}")
+            if vals is None:
+                continue
+            raw = bytes(vals)
+            off = align4(len(blob))
+            blob.extend(b"\x00" * (off - len(blob)))
+            blob.extend(raw)
+            buffer_views.append({
+                "buffer": 0,
+                "byteOffset": off,
+                "byteLength": len(raw),
+                "target": 34662,  # ARRAY_BUFFER
+            })
+            accessors.append({
+                "bufferView": len(buffer_views) - 1,
+                "componentType": 5121,   # UNSIGNED_BYTE
+                "count": len(vals),
+                "type": "SCALAR",
+                "normalized": True,
+            })
+            prim.setdefault("attributes", {})["_AO"] = len(accessors) - 1
+            n_injected += 1
+    print(f"AO injected into {n_injected} primitives "
+          f"({sum(len(v) for v in side['prims'].values()):,} verts)")
+    return blob
+
 
 def align4(n):
     return (n + 3) & ~3
@@ -57,6 +98,10 @@ def build_glb():
         img.pop("uri", None)
         img["mimeType"] = "image/png" if name.endswith(".png") else "image/jpeg"
         img["bufferView"] = len(buffer_views) - 1
+
+    # 逐顶点 AO 注入（sidecar 存在时）
+    if os.path.exists(AO_SIDECAR):
+        blob = inject_ao(gltf, blob)
 
     # BIN 块（GLB 内嵌 buffer：去掉 uri）
     gltf["buffers"][0].pop("uri", None)

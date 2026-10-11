@@ -910,6 +910,7 @@
       if (window.CassiniModel) window.CassiniModel.setEclipse(1, 1);
     }
     if (window.CassiniModel) window.CassiniModel.setFillLight(!on);
+    if (window.CassiniModel) window.CassiniModel.setBounce(null);   // 互反射仅真实光照（开启后逐帧重解算）
     if (shipSunLight) {
       shipSunLight.intensity = on ? SUN_INTENSITY : 0;
       forceShadowRefresh = true;
@@ -3138,8 +3139,9 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     // ---- 行星本影掩食（item 6，仅真实光照模式）----
     // 点光不投射阴影 → 卡西尼/惠更斯进入行星本影后仍被照亮；按太阳/行星
     // 视角半径实时解算掩食因子并调制模型材质（0=全食，1=无食）
+    let fC = 1;   // 掩食因子提升到外层：互反射解算在姿态更新后复用（updateCraftBounce）
     if (realisticOn && window.CassiniModel) {
-      let fC = eclipseFactor(_cassWorld);
+      fC = eclipseFactor(_cassWorld);
       let fH = fC;
       let hw = null;
       if (window.HuygensVis) {
@@ -3181,6 +3183,10 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
       cassiniStack.visible = !sep;
       cassiniOrbiter.visible = sep;
     }
+    // —— 飞船互反射（bounce light，真实光照模式）：受照天线盘 → 虚拟反弹光源 ——
+    // 在 updateCassiniAttitude 之后调用（用本帧最新姿态 _attQ）；普通模式不进入。
+    // fC = 本帧掩食因子（本影内盘面无光可反弹）
+    if (realisticOn && window.CassiniModel) updateCraftBounce(fC);
     if (window.HuygensVis) window.HuygensVis.update(t, camWorld, projScale, hPx, modelFade, trailOrigin);
 
     // —— 飞船自阴影（真实光照模式）：平行光对准太阳 + 阴影贴图按需重绘 ——
@@ -3880,6 +3886,64 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     } else {
       window.CassiniModel.setProbeReflections(null);
     }
+  }
+
+  /* —— 飞船互反射（bounce light，真实光照模式）——
+   * 受照天线盘近似为单点虚拟光源，补上阴影贴图覆盖不到的互反射光路：
+   * 盘面受照 → 反弹进机身背光面/盘自身暗区（真实照片背光面互反照读数约为
+   * 受照面的 3–10%；直射遮挡已由 shipSunLight 阴影贴图承担，本项只补间接光，
+   * 普通模式补光/环境光已覆盖，无需注入）。复用行星反照光注入惯例
+   * （CassiniModel.setBounce → aomap 注入块）：场景点光在真实光照下被
+   * uPointOff 归零、场景级灯会泄漏到行星暗面，均不可用。解算要点：
+   *   锚点 = dish_AO 网格包围盒中心（加载期实测，体轴系 km）→ 世界系
+   *     （_attQ 姿态，在 updateCassiniAttitude 之后调用保证本帧值）→
+   *     视图空间（_camQInv，同 _sunDirV 惯例；浮动原点 = 纯平移，场景系
+   *     位置 + camWorld 即世界系，方向/位置同用 camQInv 变换）；
+   *   受照因子 = |dot(盘轴, 至日向)|（盘开口轴 = 体轴 +Z；凹面/凸背受照均
+   *     反弹，盘缘侧对太阳 |nl|→0 自然熄灭，阈值 0.02 滤数值噪声）；
+   *   强度 = SUN_INTENSITY × 盘反照率 0.55 × 受照因子 × 掩食因子 fC
+   *     （本影内盘面无光可反弹）——距离衰减在着色端按点对点计算；
+   *   模型不可见（屏占 <1.1px）整项置零。 */
+  const _bAxisW = new THREE.Vector3();
+  const _bAnchorW = new THREE.Vector3();
+  const _bPosV = new THREE.Vector3();
+  const _bCol = new THREE.Vector3();
+  function updateCraftBounce(fC) {
+    if (window.__bounceOff) { window.CassiniModel.setBounce(null); return; }   // A/B 取证钩子
+    if (!cassiniModel.visible) { window.CassiniModel.setBounce(null); return; }
+    const seSun = registry.get('sun');
+    const anchor = window.CassiniModel.getDishAnchor();
+    if (!seSun || !anchor) { window.CassiniModel.setBounce(null); return; }
+    const sx = seSun.world[0] - _cassWorld[0];
+    const sy = seSun.world[1] - _cassWorld[1];
+    const sz = seSun.world[2] - _cassWorld[2];
+    const sl = Math.hypot(sx, sy, sz) || 1;
+    _bAxisW.set(0, 0, 1).applyQuaternion(_attQ);
+    const nl = (_bAxisW.x * sx + _bAxisW.y * sy + _bAxisW.z * sz) / sl;
+    const lit = Math.abs(nl);
+    if (lit < 0.02) { window.CassiniModel.setBounce(null); return; }
+    // 受照区质心偏移：真实互反射源是「受照带」而非盘心——太阳斜照时受照区
+    // 滑向盘缘，虚拟光源沿日向的盘面内分量偏移 r×|perp|（r=盘半径，日向近轴
+    // 时整面受照回盘心）。近距衰减才有真实感：暗区贴近受照带（0.3–1 m）时
+    // 衰减 ~0.5–0.2，远离时快速收敛
+    let px = sx / sl - _bAxisW.x * nl;
+    let py = sy / sl - _bAxisW.y * nl;
+    let pz = sz / sl - _bAxisW.z * nl;
+    const pl = Math.hypot(px, py, pz);
+    const off = anchor.r * Math.min(1, pl);
+    if (pl > 1e-6) {
+      const k = off / pl;
+      _bAnchorW.set(anchor.pos.x + px * k, anchor.pos.y + py * k, anchor.pos.z + pz * k);
+    } else {
+      _bAnchorW.copy(anchor.pos);
+    }
+    _bAnchorW.applyQuaternion(_attQ);
+    _bPosV.set(_bAnchorW.x + _cassWorld[0] - camWorld.x,
+               _bAnchorW.y + _cassWorld[1] - camWorld.y,
+               _bAnchorW.z + _cassWorld[2] - camWorld.z).applyQuaternion(_camQInv);
+    const I = SUN_INTENSITY * 0.55 * lit * fC;
+    _bCol.set(I, I, I);
+    window.CassiniModel.setBounce(_bPosV, _bCol);
   }
 
   function updatePlanetShine(hw, fC, fH) {

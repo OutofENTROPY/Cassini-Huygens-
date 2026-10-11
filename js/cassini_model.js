@@ -197,6 +197,18 @@ window.CassiniModel = (function () {
       if (o.geometry && o.geometry.attributes.uv && !o.geometry.attributes.uv2) {
         o.geometry.setAttribute('uv2', o.geometry.attributes.uv);
       }
+      // 逐顶点 AO（tools/bake_ao.py 几何烘焙，GLB 自定义属性 _AO → GLTFLoader
+      // r147 落为小写 _ao）：重映射为 aoV（GLSL 标识符以下划线开头可移植性差）。
+      // 几何在 stack/orbiter/probe 克隆间共享，首个 mesh 重映射后其余自动跳过；
+      // 旧 models.js（无 _ao）回退全 1——AO 项乘 1 逐位无害
+      if (o.geometry && !o.geometry.attributes.aoV) {
+        if (o.geometry.attributes._ao) {
+          o.geometry.setAttribute('aoV', o.geometry.attributes._ao);
+        } else {
+          const cnt = o.geometry.attributes.position.count;
+          o.geometry.setAttribute('aoV', new THREE.BufferAttribute(new Float32Array(cnt).fill(1), 1));
+        }
+      }
     });
     for (const mat of mats) {
       const p = MAT_PBR[mat.name] || { metal: 0.35, rough: 0.6, env: 0.4 };
@@ -265,6 +277,9 @@ window.CassiniModel = (function () {
   const pointOffUniform = { value: 0 };
   /* 金属层太阳镜面开关（仅真实光照置 1）：见 LF_BEGIN_NOPOINT 内 glint 注入块 */
   const glintUniform = { value: 0 };
+  /* 逐顶点 AO 门禁（仅真实光照置 1，效果类门禁规则）：接触尺度间接光遮蔽，
+   * 数据由 tools/bake_ao.py 烘焙进 GLB（自定义属性 _AO），见 enhanceMaterials */
+  const aoOnUniform = { value: 0 };
   /* 飞船→太阳 视图空间方向（scene.js updatePlanetShine 逐帧解算）：
    * env 间接光的暗面门禁用——实时 cube 含亮行星盘，背光面金属映亮盘是
    * 「真实光照暗面不黑」的根源，见 aomap 注入块 envGate */
@@ -326,16 +341,28 @@ window.CassiniModel = (function () {
       shader.uniforms.uShineCol = shine.col;
       shader.uniforms.uShineW = shine.w;
       shader.uniforms.uShineRes = shine.res;
+      shader.uniforms.uBouncePos = bounceSC.pos;
+      shader.uniforms.uBounceCol = bounceSC.col;
+      shader.uniforms.uBounceK = BOUNCE_K;
+      shader.uniforms.uAOOn = aoOnUniform;
       shader.uniforms.uReflDir = refl.dirs;
       shader.uniforms.uReflCol = refl.cols;
       shader.uniforms.uReflRad = refl.rads;
       shader.fragmentShader = 'uniform float uFillI;\nuniform float uPointOff;\nuniform float uGlint;\nuniform vec3 uSunDirV;\nuniform float uEclipse;\n' +
         'uniform vec3 uShineDir;\nuniform vec3 uShineCol;\nuniform float uShineW;\nuniform float uShineRes;\n' +
+        'uniform vec3 uBouncePos;\nuniform vec3 uBounceCol;\nuniform float uBounceK;\n' +
+        'varying float vAO;\nuniform float uAOOn;\n' +
         'uniform vec3 uReflDir[' + REFL_SLOTS + '];\nuniform vec3 uReflCol[' + REFL_SLOTS + '];\nuniform float uReflRad[' + REFL_SLOTS + '];\n' +
         (hdrURef ? 'uniform float uHdrOnM;\nuniform float uExposureM;\n' : '') + shader.fragmentShader
         .replace('#include <aomap_fragment>',
         `#include <aomap_fragment>
         {
+          // 逐顶点 AO（bake_ao.py 几何烘焙，uAOOn 仅真实光照置 1）：接触尺度
+          // 间接光遮蔽——与阴影贴图（管直射遮挡）互补的另一半。漫射与点源
+          // 反弹项全强；扩展源（行星反照光）与镜面项用 √AO 软化（遮蔽对宽
+          // 立体角源的影响小于点源）。uAOOn=0 时两因子恒 1，逐位回退
+          float aoF = mix( 1.0, vAO, uAOOn );
+          float aoS = mix( 1.0, sqrt( vAO ), uAOOn );
           // env 间接光门禁：乘因子须在 shine 注入之前——本块后半累加的行星
           // 反照光不受调制（同 diffuse 项理由）。实时 env 含亮行星盘（假 IBL），
           // 按通道分治：①漫射（大范围泛光，暗面显亮的根源）硬门禁——本影
@@ -343,8 +370,8 @@ window.CassiniModel = (function () {
           // ②镜面（行星盘镜像 = 实时反射效果本身，2026-10-06 用户要求真实
           // 光照下全程启用）仅本影熄灭——镜像随视角滑动不受暗面限制
           float sunW = clamp( ( dot( normal, uSunDirV ) + 0.15 ) / 1.15, 0.0, 1.0 );
-          reflectedLight.indirectSpecular *= uEclipse;
-          reflectedLight.indirectDiffuse *= uEclipse * mix( 1.0, sunW, uGlint );
+          reflectedLight.indirectSpecular *= uEclipse * aoS;
+          reflectedLight.indirectDiffuse *= uEclipse * mix( 1.0, sunW, uGlint ) * aoF;
           float fillW = 0.5 * dot(normal, vec3(0.0, 0.0, -1.0)) + 0.5;
           vec3 fillIrr = mix(vec3(0.102, 0.114, 0.149), vec3(0.275, 0.314, 0.416), fillW) * uFillI;
           // 20261010d：补光按日照因子调制（sunW 同块上文已算出，wrap 0.15）。
@@ -359,15 +386,42 @@ window.CassiniModel = (function () {
         }
         {
           float shineNL = dot(normal, uShineDir);
+          float aoS = mix( 1.0, sqrt( vAO ), uAOOn );   // 扩展源软化（块内重算，各块独立作用域）
           float shineD = clamp((shineNL + uShineW) / (1.0 + uShineW), 0.0, 1.0);
           // item 7 暗面土照：本影内环照/大气边缘残差补到背行星面
           //（0.5−0.5·nl 在背行星面=1、晨昏线=0.5，与 shineD 互补成半球）；
           // uShineRes=0（非掩食段）时逐位回退原包裹 Lambert，无额外开销
           float shineR = uShineRes * clamp(0.5 - 0.5 * shineNL, 0.0, 1.0);
-          reflectedLight.indirectDiffuse += uShineCol * ((shineD + shineR) * RECIPROCAL_PI) * diffuseColor.rgb;
+          // aoS 块内重算（各注入块独立作用域，见块首 aoF/aoS 注释）
+          reflectedLight.indirectDiffuse += uShineCol * ((shineD + shineR) * RECIPROCAL_PI * aoS) * diffuseColor.rgb;
           vec3 shineH = normalize(uShineDir + normalize(vViewPosition));
           float shineS = pow(clamp(dot(normal, shineH), 0.0, 1.0), mix(160.0, 8.0, uShineW));
           reflectedLight.indirectSpecular += uShineCol * (shineS * material.specularColor.rgb);
+        }
+        {
+          // 飞船互反射（真实光照，scene.js updateCraftBounce 逐帧解算）：受照
+          // 天线盘近似为点位虚拟光源——点对点平方衰减（d 单位 km，uBounceK
+          // =4e6 → 1 m 处 ~20%、3 m 处 ~3%，覆盖 4 m 盘径/米级接触间距）。
+          // 双通道：①介质件走 diffuseColor（内建金属度衰减）；②金属件走
+          // specularColor 宽瓣（4 m 盘是扩展面源，邻近金属的真实互反射是
+          // 「面映像」而非点高光——按 F0 着色的宽余弦近似，金箔暖/铝件灰，
+          // 色相正确）；③窄 Blinn 瓣保留点源 glint。uBounceCol=0（普通模式/
+          // 盘缘侧对太阳/本影/模型不可见）整体旁路。
+          // uBouncePos 为标准视图空间坐标（前方 −z）；vViewPosition = −视图空间
+          // 片元位置（前方 +z，指向相机）——光−片元向量 = 两者相加，不是相减
+          //（相减会把两项同号相消成 ~2×相机距，衰减归零，20261011c 排查教训）
+          vec3 bDelta = vViewPosition + uBouncePos;
+          float aoF = mix( 1.0, vAO, uAOOn );           // 接触遮蔽全强（块内重算，各块独立作用域）
+          float aoS = mix( 1.0, sqrt( vAO ), uAOOn );
+          float bD2 = max(dot(bDelta, bDelta), 1e-12);
+          float bAtten = 1.0 / (1.0 + uBounceK * bD2);
+          vec3 bDir = bDelta * inversesqrt(bD2);
+          float bNL = clamp(dot(normal, bDir), 0.0, 1.0);
+          float bFill = bAtten * bNL;
+          reflectedLight.indirectDiffuse += uBounceCol * (bFill * RECIPROCAL_PI * aoF) * diffuseColor.rgb;
+          reflectedLight.indirectSpecular += uBounceCol * (bFill * 0.22 * aoF) * material.specularColor.rgb;
+          vec3 bH = normalize(bDir + normalize(vViewPosition));
+          reflectedLight.indirectSpecular += uBounceCol * (bAtten * pow(clamp(dot(normal, bH), 0.0, 1.0), 20.0) * 0.5 * aoS) * material.specularColor.rgb;
         }
         {
           // 行星盘镜面反射（仅真实光照，scene.js 逐帧解算，见 setReflections 注释）：
@@ -384,6 +438,11 @@ window.CassiniModel = (function () {
           reflectedLight.indirectSpecular += reflAcc * material.specularColor.rgb;
         }`)
         .replace('#include <lights_fragment_begin>', LF_BEGIN_NOPOINT);
+      // 逐顶点 AO 传递：attribute aoV（enhanceMaterials 已从 GLB _ao 重映射）
+      // → varying vAO。begin_vertex 在全部 GLTF 标准材质顶点着色器中存在
+      shader.vertexShader = 'attribute float aoV;\nvarying float vAO;\n' +
+        shader.vertexShader.replace('#include <begin_vertex>',
+          '#include <begin_vertex>\n\tvAO = aoV;');
       // HDR 自适应曝光（scene.js setHdr 绑定同一组 uniform，见 setHdrUniforms）：
       // 显示空间（dithering 前）乘曝光 + ACES 拟合曲线，与行星/环材质同一变换
       if (hdrURef) {
@@ -415,11 +474,23 @@ window.CassiniModel = (function () {
   function setHdrUniforms(u) { hdrURef = u; }
 
   /* 真实光照模式切换：飞船直射光改由平行光承担时，点光贡献归零（uniform 切换）；
-   * 同步开启金属层太阳镜面（glint 注入块仅真实光照可见，普通模式旁路） */
+   * 同步开启金属层太阳镜面（glint 注入块仅真实光照可见，普通模式旁路）与
+   * 逐顶点 AO（aoOnUniform 门禁，普通模式乘 1 逐位回退）。dish_AO 的官方
+   * 贴图 AO 与逐顶点 AO 语义重叠——真实光照下贴图 AO 降强（0.9→0.25，仅
+   * 保留盘面细部纹理），大尺度遮蔽由逐顶点 AO 接管，防双重压暗；属性切换
+   * 走 uniform（aoMapIntensity），无需重编译 */
   function setSunMode(on) {
     pointOffUniform.value = on ? 1 : 0;
     glintUniform.value = on ? 1 : 0;
+    aoOnUniform.value = on ? 1 : 0;
+    for (const mat of eclipseSeen) {
+      if (mat.name === 'dish_AO') mat.aoMapIntensity = on ? 0.25 : (MAT_PBR.dish_AO.ao || 0.9);
+    }
   }
+
+  /* AO 门禁直控（调试/A-B 取证用）：绕过 setSunMode 单独翻转逐顶点 AO。
+   * 主流程请走 setSunMode——这里只改 uniform，不联动 dish_AO 贴图强度 */
+  function setAO(on) { aoOnUniform.value = on ? 1 : 0; }
 
   /* —— 行星反照光（真实光照模式，scene.js updatePlanetShine 逐帧解算）——
    * 近距行星反射的太阳光（土照/木照/月照）：飞船贴近行星时行星盘占据大半
@@ -461,6 +532,56 @@ window.CassiniModel = (function () {
   function setShine(dirView, col, w, res) { setShineUniforms(shineSC, dirView, col, w, res); }
 
   function setProbeShine(dirView, col, w, res) { setShineUniforms(shineProbe, dirView, col, w, res); }
+
+  /* —— 飞船互反射（bounce light，真实光照模式，scene.js updateCraftBounce 逐帧
+   * 解算）：受照天线盘 → 虚拟反弹光源，照亮机身背光面/盘自身暗区（阴影贴图
+   * 只管直射遮挡，互反射缺失时这些区域严格全黑，用户 2026-10-11 截图报）。
+   * 与行星反照光同惯例注入材质而非场景光源：真实光照下场景点光被 uPointOff
+   * 归零、场景级灯会泄漏到行星暗面，均不可用。uniform 按实体分套惯例保留：
+   * 探测器无天线盘、自身尺度小自反弹可忽略，暂只建 'sc' 套（探测器不参与）。 */
+  const BOUNCE_K = { value: 4.0e6 };   // km⁻²：1 m 处衰减 ~20%、3 m 处 ~3%（接触尺度）
+  const bounceSC = {
+    pos: { value: new THREE.Vector3() },   // 盘心，视图空间（scene.js 按相机四元数变换）
+    col: { value: new THREE.Vector3(0, 0, 0) },
+  };
+
+  function setBounce(posView, col) {
+    if (posView && col) {
+      bounceSC.pos.value.copy(posView);
+      bounceSC.col.value.copy(col);
+    } else {
+      bounceSC.col.value.set(0, 0, 0);
+    }
+  }
+
+  /* —— HGA 天线盘锚点（体轴系，km；加载期从 dish_AO 材质网格实测）——
+   * 互反射虚拟光源的位置锚点：全部 dish_AO 网格包围盒中心（GLB 系）经
+   * Q_GLB + 米→km 变换到体轴系。stack 与 orbiter 几何共享（分离仅摘除
+   * huygens_probe 节点，不含天线盘），单锚点两实体通用。 */
+  let dishAnchor = null;
+  function computeDishAnchor(src) {
+    const box = new THREE.Box3();
+    const tmp = new THREE.Box3();
+    let found = false;
+    src.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      const ms = Array.isArray(o.material) ? o.material : [o.material];
+      if (!ms.some((m) => m && m.name === 'dish_AO')) return;
+      o.updateWorldMatrix(true, false);
+      tmp.setFromObject(o);
+      if (!found) { box.copy(tmp); found = true; }
+      else box.union(tmp);
+    });
+    if (!found) return null;
+    const c = box.getCenter(new THREE.Vector3());
+    c.multiplyScalar(0.001).applyQuaternion(Q_GLB);
+    const s = box.getSize(new THREE.Vector3());
+    // 盘半径（GLB 盘面在 XZ 平面，轴 = +Y）：供 scene.js 把虚拟光源沿日向
+    // 滑向受照带（互反射源 ≈ 受照区质心，非盘心）
+    return { pos: c, r: Math.max(s.x, s.z) * 0.0005 };
+  }
+
+  function getDishAnchor() { return dishAnchor; }
 
   /* —— 行星盘镜面反射（真实光照，scene.js updatePlanetShine 逐帧解算）——
    * 金属面映出周围行星的真实镜像：CPU 侧按飞船位置挑出角半径最大的至多 3 个
@@ -654,6 +775,7 @@ window.CassiniModel = (function () {
     }).then((src) => {
       if (L) L.modelStep(0.75);
       enhanceMaterials(src, 'sc');
+      dishAnchor = computeDishAnchor(src);
       const stack = wrapModel(src, 0.0180, 'cassiniStack');   // 全长（磁强计双杆跨距 17.98 m）
 
       // 轨道器 = 组合体克隆摘除 huygens_probe 节点（材质与组合体共享，掩食同 tag 'sc'）
@@ -686,5 +808,5 @@ window.CassiniModel = (function () {
     pending.then(done);
   }
 
-  return { load, Q_GLB, setEclipse, setFillLight, setSunMode, setSunDirView, setShine, setProbeShine, setReflections, setProbeReflections, setLiveEnv, setEnvironment, setHdrUniforms };
+  return { load, Q_GLB, setEclipse, setFillLight, setSunMode, setAO, setSunDirView, setShine, setProbeShine, setBounce, getDishAnchor, setReflections, setProbeReflections, setLiveEnv, setEnvironment, setHdrUniforms };
 })();
