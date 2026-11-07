@@ -778,10 +778,8 @@
    * 亮头无需重建顶点位置即可始终贴住天体。dph 一律用「重建时关键帧」外推
    * 天体当前 M——各关键帧 M0 独立拟合、相互不连续（相邻帧可差数 rad），
    * 跨关键帧求差会让亮头跳位；同帧外推与网格严格同系、精确连续。 */
-  const ORBIT_TAU_FRAC = 0.65;   // 衰减时距 = 0.10 × 公转周期：亮弧贴住天体身后 ~1/8 圈
-  /* 对侧（age ≥ 0.5 圈）硬归零：指数尾在对侧仍余 ~1.5%，经 sRGB 输出伽马
-   * 提亮后会留下一条隐约可见的「幽灵半椭圆」，稀释淡出观感；该亮度本身
-   * 已低于可见阈值，硬切无可见跳变。 */
+  const ORBIT_TAU_FRAC = 0.65;   // 衰减时距 = 0.65 × 公转周期：整环可见，近天体处高亮渐变
+  /* 全环连续显示：ORBIT_CUT 设为 1.0 使整圈轨道闭合连续，不人为截断半椭圆 */
   const ORBIT_CUT = 1.0;
   function applyOrbitFade(entry, t) {
     const colAttr = entry.orbitColAttr;
@@ -2700,6 +2698,7 @@
    * 恒 ~1e-7 rad 不可见。暂停/拖拽/最大缩放时相机相对 origin 不再变化，
    * 完全免重写。 */
   const trailOrigin = { x: 0, y: 0, z: 0 };
+  let lastFullIdx = -1;
   function rebaseTrail() {
     const ox = trailOrigin.x - camWorld.x;
     const oy = trailOrigin.y - camWorld.y;
@@ -2723,6 +2722,7 @@
     trailOrigin.x = camWorld.x;
     trailOrigin.y = camWorld.y;
     trailOrigin.z = camWorld.z;
+    lastFullIdx = -1;
     // 原点已跳变：主轨迹缓冲重写，尾迹缓冲由 updateTrailTail 逐帧重写（同基准）
     const arr = trailPosBuffer;
     for (let i = 0; i < trailN * 3; i += 3) {
@@ -3120,10 +3120,30 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     if (idxTail >= idxNow) idxTail = Math.max(0, idxNow - 1);
     tailIdxTail = idxTail;
     trailFullLine.visible = cassTrail && trailOptions.future && trailK > 0.01;
-    if (trailFullLine.visible) {
-      // 首弦 [idxNow → idxNow+1] 由尾迹延伸段接管（锚定轨道激活时按真实路径绘制），
-      // future 线从 idxNow+1 起画，衔接点逐位重合
-      trailFullLine.geometry.setDrawRange(idxNow + 1, Math.max(0, trailN - (idxNow + 1)));
+    if (trailFullLine.visible && idxNow < trailN) {
+      // 未来轨迹首顶点实时对齐飞船当前位置（消除离散烘焙网格与飞船之间的空隙）：
+      // 顶点 idxNow 写为飞船当前坐标，下连 idxNow+1，全段未来线 100% 蓝色无断裂
+      const arr = trailPosBuffer;
+      if (lastFullIdx !== -1 && lastFullIdx !== idxNow && lastFullIdx < trailN) {
+        arr[lastFullIdx * 3] = trailThree[lastFullIdx * 3] - trailOrigin.x;
+        arr[lastFullIdx * 3 + 1] = trailThree[lastFullIdx * 3 + 1] - trailOrigin.y;
+        arr[lastFullIdx * 3 + 2] = trailThree[lastFullIdx * 3 + 2] - trailOrigin.z;
+      }
+      lastFullIdx = idxNow;
+      arr[idxNow * 3] = _cassWorld[0] - trailOrigin.x;
+      arr[idxNow * 3 + 1] = _cassWorld[1] - trailOrigin.y;
+      arr[idxNow * 3 + 2] = _cassWorld[2] - trailOrigin.z;
+      trailFullLine.geometry.attributes.position.needsUpdate = true;
+      trailFullLine.geometry.setDrawRange(idxNow, Math.max(0, trailN - idxNow));
+    } else {
+      if (lastFullIdx !== -1 && lastFullIdx < trailN) {
+        const arr = trailPosBuffer;
+        arr[lastFullIdx * 3] = trailThree[lastFullIdx * 3] - trailOrigin.x;
+        arr[lastFullIdx * 3 + 1] = trailThree[lastFullIdx * 3 + 1] - trailOrigin.y;
+        arr[lastFullIdx * 3 + 2] = trailThree[lastFullIdx * 3 + 2] - trailOrigin.z;
+        trailFullLine.geometry.attributes.position.needsUpdate = true;
+        lastFullIdx = -1;
+      }
     }
     const startIdx = trailOptions.mode === 'recent' ? lowerBound(trailT, t - RECENT_SPAN) : 0;
     const flownCount = idxTail + 1 - startIdx;
@@ -3931,13 +3951,13 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
     let pz = sz / sl - _bAxisW.z * nl;
     const pl = Math.hypot(px, py, pz);
     const off = anchor.r * Math.min(1, pl);
+    _bAnchorW.copy(anchor.pos).applyQuaternion(_attQ);
     if (pl > 1e-6) {
       const k = off / pl;
-      _bAnchorW.set(anchor.pos.x + px * k, anchor.pos.y + py * k, anchor.pos.z + pz * k);
-    } else {
-      _bAnchorW.copy(anchor.pos);
+      _bAnchorW.x += px * k;
+      _bAnchorW.y += py * k;
+      _bAnchorW.z += pz * k;
     }
-    _bAnchorW.applyQuaternion(_attQ);
     _bPosV.set(_bAnchorW.x + _cassWorld[0] - camWorld.x,
                _bAnchorW.y + _cassWorld[1] - camWorld.y,
                _bAnchorW.z + _cassWorld[2] - camWorld.z).applyQuaternion(_camQInv);
@@ -4351,7 +4371,18 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
       const lvlDim = isMoon ? 1 : (1 - REL_DIM2 * bestMK);
       const win = showRel && k > 0.001 ? soiWindowAt(sp, t) : null;
       for (const w of sp.wins) {
-        if (!win || w !== win || tfade <= 0.01) { w.full.visible = false; w.flown.visible = false; continue; }
+        if (!win || w !== win || tfade <= 0.01) {
+          w.full.visible = false; w.flown.visible = false;
+          if (w.lastRel !== undefined && w.lastRel !== -1 && w.lastRel < w.n) {
+            const pArr = w.full.geometry.attributes.position.array;
+            pArr[w.lastRel * 3] = w.rel[w.lastRel * 3];
+            pArr[w.lastRel * 3 + 1] = w.rel[w.lastRel * 3 + 1];
+            pArr[w.lastRel * 3 + 2] = w.rel[w.lastRel * 3 + 2];
+            w.full.geometry.attributes.position.needsUpdate = true;
+            w.lastRel = -1;
+          }
+          continue;
+        }
         // —— 缓冲一次性构建（不含相机量 → 永不重建）；每帧对象位置在 f64 中精确给出
         //    渲染位置 ≡ 锚定体当前 + rel0 + buf − camWorld = 锚定体当前 + rel_i − cam ——
         if (!w.built) buildSoiWindow(w);
@@ -4387,9 +4418,28 @@ function writeTailLine(line, i0, i1, t, recent, frameBody) {
         const flownWinCount = relTail + 1 - wStart;
         w.flown.geometry.setDrawRange(wStart, Math.max(0, flownWinCount));
         w.flown.visible = flownWinCount >= 2;
-        if (trailOptions.future) {
-          // 首弦 [rel → rel+1] 由尾迹延伸段接管，future 线从 rel+1 起画
-          w.full.geometry.setDrawRange(rel + 1, Math.max(0, w.n - (rel + 1)));
+        if (trailOptions.future && rel < w.n) {
+          const pArr = w.full.geometry.attributes.position.array;
+          if (w.lastRel !== undefined && w.lastRel !== -1 && w.lastRel !== rel && w.lastRel < w.n) {
+            pArr[w.lastRel * 3] = w.rel[w.lastRel * 3];
+            pArr[w.lastRel * 3 + 1] = w.rel[w.lastRel * 3 + 1];
+            pArr[w.lastRel * 3 + 2] = w.rel[w.lastRel * 3 + 2];
+          }
+          w.lastRel = rel;
+          pArr[rel * 3] = (_cassWorld[0] - wx) - bx;
+          pArr[rel * 3 + 1] = (_cassWorld[1] - wy) - by;
+          pArr[rel * 3 + 2] = (_cassWorld[2] - wz) - bz;
+          w.full.geometry.attributes.position.needsUpdate = true;
+          w.full.geometry.setDrawRange(rel, Math.max(0, w.n - rel));
+        } else {
+          if (w.lastRel !== undefined && w.lastRel !== -1 && w.lastRel < w.n) {
+            const pArr = w.full.geometry.attributes.position.array;
+            pArr[w.lastRel * 3] = w.rel[w.lastRel * 3];
+            pArr[w.lastRel * 3 + 1] = w.rel[w.lastRel * 3 + 1];
+            pArr[w.lastRel * 3 + 2] = w.rel[w.lastRel * 3 + 2];
+            w.full.geometry.attributes.position.needsUpdate = true;
+            w.lastRel = -1;
+          }
         }
         // 相对轨迹顶点少，逐帧刷新颜色（近期淡出跟随回放，无 600s 缓存迟滞）
         applyTrailFade(w.flown, w.times, t, [1.0, 0.827, 0.498], relTail + 1, wStart, true);
