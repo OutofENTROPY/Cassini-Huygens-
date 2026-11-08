@@ -28,8 +28,17 @@ function loadData(f) {
 
 // atob/btoa polyfill（Node 有 Buffer，直接桥接）
 sandbox.atob = (b64) => Buffer.from(b64, 'base64').toString('binary');
-loadData('cassini_data.js');
-loadData('moons_data.js');
+for (const [base, varName] of [['cassini_data', 'CASSINI_DATA'], ['moons_data', 'MOONS_DATA']]) {
+  const mono = path.join(ROOT, 'data', base + '.js');
+  if (fs.existsSync(mono)) { loadData(base + '.js'); continue; }
+  const asm = path.join(ROOT, 'data', base + '.asm.js');
+  if (!fs.existsSync(asm)) { console.error('MISSING ' + mono); process.exit(2); }
+  sandbox.window.__DP = {};
+  const shards = fs.readdirSync(path.join(ROOT, 'data')).filter(f => f.startsWith(base + '.p') && f.endsWith('.js')).sort();
+  for (const f of shards) loadData(f);
+  loadData(base + '.asm.js');
+}
+delete sandbox.window.__DP;
 
 const DATA = sandbox.window.CASSINI_DATA;
 const MOONS = sandbox.window.MOONS_DATA;
