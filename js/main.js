@@ -369,17 +369,18 @@
     [et('2017-04-26T00:00:00Z'), 'Grand Finale · 22 次环缝俯冲'],
     [et('2017-09-15T10:40:00Z'), '任务终段 · 受控再入 Saturn 大气'],
   ];
-  function phaseAt(t) {
-    let label = PHASES[0][1];
-    for (const p of PHASES) { if (t >= p[0]) label = p[1]; }
-    return label;
-  }
-
   /* 时间轴 t 域为 ET（TDB）秒；事件表 et / URL 深链为 UTC 秒。TDB−UTC ≈
    * 64.2~69.2 s（1997→2017），全站以 65 s 常数近似：显示（fmtDate/timeline
    * updateDate）做 t−65，UTC → t 跳转做 +65。事件跳转若不加此项会早落
    * ~1 min，且与深链路径（本就 +65）不一致 */
   const ET_UTC_OFF = 65;
+
+  function phaseAt(t) {
+    let label = PHASES[0][1];
+    const tUtc = t - ET_UTC_OFF;
+    for (const p of PHASES) { if (tUtc >= p[0]) label = p[1]; }
+    return label;
+  }
 
   function fmtDate(t) {
     const d = new Date(J2000Ms + (t - ET_UTC_OFF) * 1000);

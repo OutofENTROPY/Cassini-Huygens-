@@ -253,6 +253,18 @@ window.HuygensVis = (function () {
   const _cenQ = new THREE.Quaternion();
   const _cenOff = new THREE.Vector3();
   const _spinAxisTmp = new THREE.Vector3();
+  const _tmpSat = [0, 0, 0];
+  const _tmpTit = [0, 0, 0];
+  function titanAngleAt(t) {
+    if (!ctx || !ctx.registry) return 0;
+    const sat = ctx.registry.get('saturn');
+    const tit = ctx.registry.get('titan');
+    if (!sat || !tit || !sat.track || !tit.track) return 0;
+    sat.track.at(t, _tmpSat);
+    tit.track.at(t, _tmpTit);
+    const v = ctx.eclToThree([_tmpSat[0] - _tmpTit[0], _tmpSat[1] - _tmpTit[1], _tmpSat[2] - _tmpTit[2]]);
+    return Math.atan2(-v[2], v[0]);
+  }
 
   /* 任意时刻位置（日心系 Three 轴）：
      分离前 = Cassini 位置 + R_cass·挂点（真实结构挂载位置，与组合体 stack 内
@@ -303,6 +315,16 @@ window.HuygensVis = (function () {
     }
     const tt = Math.min(t, TD_ET);
     relAt(desc, tt, _rel);
+    if (t > TD_ET) {
+      // 触地后锁定在 Titan 地表：Titan 随潮汐锁定绕 Saturn 旋转，
+      // 计算时刻 t 与触地时刻 TD_ET 之间的自转角位移 dAng，绕 Titan 极轴（Y 轴）
+      // 旋转着陆点偏移 _rel，消除失联前 72 min 内惯性系漂移（~50 km），确保探测器严格固定在着陆点
+      const dAng = titanAngleAt(t) - titanAngleAt(TD_ET);
+      const c = Math.cos(dAng), sn = Math.sin(dAng);
+      const rx = _rel[0] * c + _rel[2] * sn;
+      const rz = -_rel[0] * sn + _rel[2] * c;
+      _rel[0] = rx; _rel[2] = rz;
+    }
     return [titW[0] + _rel[0], titW[1] + _rel[1], titW[2] + _rel[2]];
   }
 
@@ -471,9 +493,17 @@ window.HuygensVis = (function () {
         // sepQuat：分离瞬间姿态快照，在首个 t ≥ SEP_ET 的帧锁定，之后不再更新。
         if (!preSep && !sepQuat && modelQuat) sepQuat = modelQuat.clone();
         const baseQ = preSep ? modelQuat : (sepQuat || modelQuat);
-        if (baseQ) probe.quaternion.copy(baseQ);
-        // —— 自旋：绕 body +Y（回转对称轴），分离前为 0、分离后 7 rpm ——
-        const ang = preSep
+        if (baseQ) {
+          if (t > TD_ET && sepQuat) {
+            const dAng = titanAngleAt(t) - titanAngleAt(TD_ET);
+            _cenQ.setFromAxisAngle(_spinAxisTmp.set(0, 1, 0), dAng);
+            probe.quaternion.copy(_cenQ.multiply(sepQuat));
+          } else {
+            probe.quaternion.copy(baseQ);
+          }
+        }
+        // —— 自旋：绕 body +Y（回转对称轴），分离前与触地后为 0、飞行中 7 rpm ——
+        const ang = preSep || t >= TD_ET
           ? 0
           : ((t - SEP_ET) * SPIN_RPM * 2 * Math.PI / 60) % (2 * Math.PI);
         if (!preSep && centroidLocal) {
