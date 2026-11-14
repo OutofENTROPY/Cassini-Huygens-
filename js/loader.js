@@ -22,7 +22,7 @@
     three: '2026094', gltf: '2026103', tex: '2026401', stars: '2026094',
     cassini: '2026105', moons: '2026105', attitude: '2026301', models: '20261011d',
     events: '2026405', jtex: '2026103',     huygens: '20261006f', cmodel: '20261011d',
-    scene: '20261011c', camera: '20261004b', timeline: '20261004c', main: '20261010n',
+    scene: '20261011c', camera: '20261004b', timeline: '20261004c', main: '20261114a',
   };
   console.log('[Cassini] module versions:', JSON.stringify(V));   // 自查缓存：控制台应出现本行且 scene 为最新
   window.CassiniVersions = V;   // HUD 徽标展示用：截图自证运行版本（20261010h）
@@ -52,7 +52,7 @@
     ['js/scene.js?v=' + V.scene, 'lib', 289292],
     ['js/camera.js?v=' + V.camera, 'lib', 16538],
     ['js/timeline.js?v=' + V.timeline, 'lib', 6625],
-    ['js/main.js?v=' + V.main, 'lib', 27566],
+    ['js/main.js?v=' + V.main, 'lib', 29118],
   ];
 
   /* ---------- 资源组（主条分段，槽宽 = 字节真实占比；场景构建固定小槽） ---------- */

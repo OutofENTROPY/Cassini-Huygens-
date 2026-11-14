@@ -80,14 +80,25 @@
   });
   tl.addEventMarks(EVENTS, pickEvent);
 
-  // 事件卡：左上角通知按钮（◉ 右侧，手机 / 桌面一致）点按展开 / 再点收起（按钮不消失），
-  // 事件卡右上角 ⌄ 亦可收起；点击任务事件时卡片默认收起、按钮呼吸闪烁提示
+  /* 事件卡：左上角通知按钮（◉ 右侧，手机 / 桌面一致）点按展开 / 再点收起（按钮不消失），
+     事件卡右上角 ⌄ 亦可收起。
+     展开状态**只由用户决定**（20261114）：切换任务事件、点时间轴事件节点、播放自动
+     越事件都只换卡片内容，绝不改写折叠状态。原实现在 showEventCard() 里无条件
+     add('event-folded')，任何一次切卡都会把用户展开的卡片又收起来、通知按钮的
+     开关状态被别的按钮覆盖——通知按钮必须始终反映用户选择。默认折叠（首次越事件
+     装入说明并收在按钮里做呼吸提示），此后用户点过什么就保持什么 */
   const eventCard = document.getElementById('event-card');
-  document.getElementById('event-fold').addEventListener('click', () => {
-    document.body.classList.add('event-folded');
-  });
+  let eventFolded = true;
+  function setEventFolded(folded) {
+    eventFolded = folded;
+    document.body.classList.toggle('event-folded', folded);
+  }
+  setEventFolded(true);
+  document.getElementById('event-fold').addEventListener('click', () => setEventFolded(true));
   document.getElementById('event-fab').addEventListener('click', () => {
-    document.body.classList.toggle('event-folded');
+    // 尚无事件说明时按钮无内容可开：不改写用户选择（避免「空点一下」把状态翻反）
+    if (eventCard.classList.contains('hidden')) return;
+    setEventFolded(!eventFolded);
   });
 
   // 视图按钮（仅视角切换；真实光照是独立开关，不触发镜头移动）
@@ -426,8 +437,11 @@
     document.getElementById('event-text').textContent = ev.text;
     eventCard.classList.remove('hidden');
     document.body.classList.add('event-open');
-    // 每次点开任务事件：详情卡默认收起，左上角通知按钮（◉ 右侧）弹出呼吸提示，点按展开 / 再点收起
-    document.body.classList.add('event-folded');
+    // 只换内容，不动折叠状态（用户展开着就继续展开，收着就继续收着）；
+    // 轻淡入一下提示「卡片已切换」，避免内容瞬变看不出变化
+    eventCard.classList.remove('ev-swap');
+    void eventCard.offsetWidth;
+    eventCard.classList.add('ev-swap');
   }
 
   /* 展开事件列表 / 跳转事件时，让列表滚动定位到当前事件（即时定位，展开即到位） */
@@ -453,8 +467,8 @@
       lastEventIdx = idx;
       EVENTS.forEach((x, i) => x._item && x._item.classList.toggle('current', i === idx));
       tl.markPast(EVENTS, t);
-      // 时间越过任务事件：自动把该事件说明装入事件卡并保持折叠（通知按钮常驻，呼吸提示）；
-      // 回退到首事件之前则隐藏事件卡、熄灭通知按钮
+      // 时间越过任务事件：把该事件说明装入事件卡（折叠与否沿用用户当前选择）；
+      // 回退到首事件之前则隐藏卡片、熄灭通知按钮（折叠状态保留，回到有事件时不复位）
       if (idx >= 0) showEventCard(EVENTS[idx]);
       else {
         eventCard.classList.add('hidden');

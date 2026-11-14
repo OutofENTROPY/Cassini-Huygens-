@@ -376,7 +376,8 @@ body.hud-open #body-info:not(.hidden) {
 
 /* ---------- 事件卡 ---------- */
 /* 点击任务事件后由左上角通知按钮（◉ 右侧）展开，位于左下角（时间轴上方）；
-   body.event-folded 时收进 #event-fab 通知按钮（点任务事件默认收起，按钮点按切换） */
+   body.event-folded 时收进 #event-fab 通知按钮。折叠状态只由用户点按决定
+   （切换任务卡不会自动收起——20261114） */
 #event-card {
   position: absolute; left: 18px; bottom: 142px; z-index: 11;
   width: 336px; max-width: calc(100vw - 36px);
@@ -393,9 +394,12 @@ body.event-folded #event-card { opacity: 0; transform: translateY(16px) scale(0.
   background: linear-gradient(to bottom, var(--accent2), rgba(255,162,89,0.25));
   border-radius: var(--r-full);
 }
-/* 收起（可再次展开）：折入 #event-fab，事件卡唯一操作按钮 */
+/* 收起（可再次展开）：折入 #event-fab，事件卡唯一操作按钮。
+   z-index 必加：下面的 #event-date/#event-title 是全宽块级文本，卡片内容做淡入
+   动画（transform）时会自建层叠上下文盖到按钮中心，⌄ 变得点不动（20261114 实测
+   Playwright 命中 event-date 而非按钮） */
 #event-fold {
-  position: absolute; top: 10px; right: 10px;
+  position: absolute; top: 10px; right: 10px; z-index: 2;
   width: 26px; height: 26px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   background: transparent; border: none;
@@ -407,14 +411,28 @@ body.event-folded #event-card { opacity: 0; transform: translateY(16px) scale(0.
 #event-date {
   font-size: 11px; font-weight: 600; color: var(--accent2);
   letter-spacing: 1.2px; font-variant-numeric: tabular-nums;
+  padding-right: 34px;   /* 让开右上角 ⌄ 收起按钮 */
 }
 #event-title { font-size: 16px; margin: 6px 0 8px; font-weight: 600; letter-spacing: 0.2px; }
 #event-text { font-size: 12.8px; line-height: 1.75; color: var(--text-2); }
+/* 切换任务卡片：卡片保持展开（不收起），仅内容轻微淡入，提示已换成新事件 */
+#event-card.ev-swap #event-date,
+#event-card.ev-swap #event-title,
+#event-card.ev-swap #event-text { animation: ev-swap .32s var(--ease) both; }
+@keyframes ev-swap {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #event-card.ev-swap #event-date,
+  #event-card.ev-swap #event-title,
+  #event-card.ev-swap #event-text { animation: none; }
+}
 
 /* 事件卡通知按钮：常驻左上角 ◉ 详情按钮右侧（手机 / 桌面一致，absolute 挂在
    #hud-stack 内与 ◉ 对齐，不挤压下方卡片流式布局）。时间越过任务事件时自动
-   装入事件说明并保持折叠；点按展开 / 再点收起——有折叠中的事件说明时呼吸
-   闪烁提示，展开期间主色高亮 */
+   装入事件说明；折叠状态跟随用户选择，点按展开 / 再点收起——折叠且有事件说明
+   时呼吸闪烁提示，展开期间主色高亮 */
 #event-fab {
   display: flex;
   position: absolute; left: 46px; top: 0; z-index: 11;
